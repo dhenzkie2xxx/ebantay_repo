@@ -19,3 +19,4 @@ try {
   echo json_encode(["ok" => false, "message" => "DB connection failed"]);
   exit;
 }
+?>
