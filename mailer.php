@@ -1,0 +1,41 @@
+<?php
+
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+function sendVerificationEmail($toEmail, $toName, $verifyLink) {
+
+    $mail = new PHPMailer(true);
+
+    try {
+        $mail->isSMTP();
+        $mail->Host       = 'smtp.gmail.com';
+        $mail->SMTPAuth   = true;
+        $mail->Username   = 'REMOVED_EMAIL';
+        $mail->Password   = 'REMOVED';
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = 587;
+
+        $mail->setFrom('REMOVED_EMAIL', 'eBantay');
+        $mail->addAddress($toEmail, $toName);
+
+        $mail->isHTML(true);
+        $mail->Subject = 'Verify your eBantay account';
+        $mail->Body = "
+            <h2>Email Verification</h2>
+            <p>Hello Kabayan! <b>$toName</b>,</p>
+            <p>Please verify your email by clicking below:</p>
+            <a href='$verifyLink'>Verify Email</a>
+            <p>Please take note that this is only the first step for verification.</p>
+            <p>You still need to complete setting up your account once you logged in the system to fully access the feature of eBantay. Thank you.</p>
+        ";
+
+        $mail->AltBody = "Verify your eBantay account: $verifyLink";
+
+        $mail->send();
+        return true;
+
+    } catch (Exception $e) {
+        return false;
+    }
+}
