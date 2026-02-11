@@ -5,18 +5,21 @@ use PHPMailer\PHPMailer\Exception;
 
 function sendVerificationEmail($toEmail, $toName, $verifyLink) {
 
+    $mailUser = getenv('MAIL_USER');
+    $mailPass = getenv('MAIL_PASS');
+    $mailFrom = getenv('MAIL_FROM') ?: $mailUser;
     $mail = new PHPMailer(true);
 
     try {
         $mail->isSMTP();
         $mail->Host       = 'smtp.gmail.com';
         $mail->SMTPAuth   = true;
-        $mail->Username   = 'REMOVED_EMAIL';
-        $mail->Password   = 'REMOVED';
+        $mail->Username   = $mailUser;
+        $mail->Password   = $mailPass;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = 587;
 
-        $mail->setFrom('REMOVED_EMAIL', 'eBantay');
+        $mail->setFrom($mailFrom, 'eBantay');
         $mail->addAddress($toEmail, $toName);
 
         $mail->isHTML(true);
