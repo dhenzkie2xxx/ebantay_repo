@@ -9,6 +9,8 @@ RUN docker-php-ext-install pdo pdo_mysql
 # Copy your API code into Apache web root
 COPY . /var/www/html/
 
+COPY ca.pem /var/www/html/ca.pem
+
 # Set proper permissions
 RUN chown -R www-data:www-data /var/www/html
 

@@ -9,14 +9,28 @@ $pass = getenv('DB_PASS') ?: 'dhenzkie2000';
 
 $dsn = "mysql:host={$host};port={$port};dbname={$db};charset=utf8mb4";
 
+// If CA cert exists (cloud), use it
+$sslCaPath = __DIR__ . "/ca.pem";
+
+$options = [
+  PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+  PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+];
+
+if (file_exists($sslCaPath)) {
+  $options[PDO::MYSQL_ATTR_SSL_CA] = $sslCaPath;
+}
+
 try {
-  $pdo = new PDO($dsn, $user, $pass, [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-  ]);
+  $pdo = new PDO($dsn, $user, $pass, $options);
 } catch (PDOException $e) {
   http_response_code(500);
-  echo json_encode(["ok" => false, "message" => "DB connection failed"]);
+  echo json_encode([
+    "ok" => false,
+    "message" => "DB connection failed",
+    "error" => $e->getMessage() // remove later
+  ]);
   exit;
 }
+
 ?>

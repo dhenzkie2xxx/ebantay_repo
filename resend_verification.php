@@ -1,4 +1,4 @@
 <?php
-    $baseUrl = "http://192.168.140.38/ebantay/api";
+    $baseUrl = "https://ebantay-api.onrender.com";
     $verifyLink = $baseUrl . "/verify.php?token=" . $token;
 ?>

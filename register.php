@@ -56,7 +56,7 @@ $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 $token = bin2hex(random_bytes(32)); // 64 chars
 $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24);
 
-$baseUrl = "http://192.168.140.38/ebantay/api";
+$baseUrl = "https://ebantay-api.onrender.com";
 
 $verifyLink = $baseUrl . "/verify.php?token=" . $token;
 
