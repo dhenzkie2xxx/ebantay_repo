@@ -71,8 +71,8 @@ $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 $token = bin2hex(random_bytes(32));
 $expires = date("Y-m-d H:i:s", time() + 86400);
 
-// Use Render domain for links
-$baseUrl = "https://ebantay-api.onrender.com";
+// Use domain for links
+$baseUrl = "https://ebantay.top.gen.in";
 $verifyLink = $baseUrl . "/verify.php?token=" . $token;
 
 // Insert user (valid is for document completion, not email verification)
