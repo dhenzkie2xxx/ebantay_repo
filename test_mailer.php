@@ -4,7 +4,7 @@ header('Content-Type: application/json');
 require __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/mailer.php';
 
-$ok = sendVerificationEmail("REMOVED_EMAIL", "Test User", "https://example.com");
+$ok = sendVerificationEmail("dhenmarcginos@gmail.com", "Test User", "https://example.com");
 
 echo json_encode([
   "ok" => $ok,
