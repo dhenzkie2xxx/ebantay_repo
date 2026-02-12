@@ -1,17 +1,20 @@
+# ---- PHP + Apache ----
 FROM php:8.3-apache
 
-# Enable Apache rewrite (optional but common)
 RUN a2enmod rewrite
-
-# Install PDO MySQL
 RUN docker-php-ext-install pdo pdo_mysql
 
-# Copy your API code into Apache web root
-COPY . /var/www/html/
+# ---- Install Composer ----
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-COPY ca.pem /var/www/html/ca.pem
+# ---- Copy app ----
+WORKDIR /var/www/html
+COPY . .
 
-# Set proper permissions
+# ---- Install PHP deps (creates vendor/) ----
+RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
+
+# Permissions
 RUN chown -R www-data:www-data /var/www/html
 
 EXPOSE 80
