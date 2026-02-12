@@ -40,7 +40,7 @@ function renderPage($title, $status, $message, $ctaText = null, $ctaHref = null)
       body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:{$bg};color:{$text};}
       .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
       .card{width:100%;max-width:520px;background:{$card};border:1px solid {$border};border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.08);overflow:hidden;}
-      .top{padding:18px 22px;background:linear-gradient(90deg, {$blue}, #0B2A6F);color:#fff;}
+      .top{padding:18px 22px;background:linear-gradient(90deg, {$blue}, #0B2A6F);color:#fff;text-align: center;}
       .brand{font-weight:800;letter-spacing:.3px;font-size:18px;}
       .sub{opacity:.85;margin-top:4px;font-size:12px;}
       .content{padding:22px;}
