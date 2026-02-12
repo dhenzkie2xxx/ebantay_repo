@@ -15,6 +15,11 @@ RUN apt-get update \
   && docker-php-ext-install zip \
   && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libcurl4-openssl-dev \
+  && docker-php-ext-install curl \
+  && rm -rf /var/lib/apt/lists/*
+  
 # Install Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
