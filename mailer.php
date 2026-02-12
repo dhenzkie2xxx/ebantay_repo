@@ -24,7 +24,7 @@ function sendVerificationEmail($toEmail, $toName, $verifyLink) {
         $mail->Username   = $mailUser;
         $mail->Password   = $mailPass;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port       = 587;
+        $mail->Port       = 465;
 
         $mail->CharSet = 'UTF-8';
         $mail->SMTPDebug = 0; // Keep 0 in production
