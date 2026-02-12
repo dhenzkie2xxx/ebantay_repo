@@ -53,13 +53,16 @@ function renderPage($title, $status, $message, $ctaText = null, $ctaHref = null)
       .muted{margin-top:16px;font-size:12px;color:{$muted};}
       .footer{padding:14px 22px;border-top:1px solid {$border};font-size:12px;color:{$muted};display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;}
       .pill{padding:6px 10px;border-radius:999px;background:#F1F5F9;border:1px solid {$border};}
+      .logo-wrap{text-align: center;margin-bottom: 10px;}.logo-wrap img{max-width: 220px;width: 70%;height: auto;}
     </style>
   </head>
   <body>
     <div class='wrap'>
       <div class='card'>
         <div class='top'>
-          <div class='brand'>eBantay</div>
+          <div class='logo-wrap'>
+            <img src='https://ebantay.top.gen.in/assets/logowhite.png' alt='eBantay Logo' />
+          </div>
           <div class='sub'>Community Safety Reporting Application</div>
         </div>
         <div class='content'>
