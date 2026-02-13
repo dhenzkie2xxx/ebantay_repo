@@ -49,7 +49,8 @@ function renderPage($title, $status, $message, $ctaText = null, $ctaHref = null)
       .badge span{font-weight:800;}
       h1{margin:0 0 8px 0;font-size:20px;}
       p{margin:0 0 12px 0;color:{$muted};line-height:1.45;}
-      .cta{display:inline-block;margin-top:10px;background:{$accent};color:#fff;text-decoration:none;padding:12px 14px;border-radius:12px;font-weight:800;}
+      .cta{display:inline-block; margin-top:14px; background:linear-gradient(90deg, {$blue}, {$red});color:#fff;text-decoration:none;padding:14px 18px;border-radius:14px;font-weight:800;transition:all .2s ease;}
+      .cta:hover {transform:scale(1.02);}
       .muted{margin-top:16px;font-size:12px;color:{$muted};}
       .footer{padding:14px 22px;border-top:1px solid {$border};font-size:12px;color:{$muted};display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;}
       .pill{padding:6px 10px;border-radius:999px;background:#F1F5F9;border:1px solid {$border};}
@@ -88,6 +89,22 @@ function renderPage($title, $status, $message, $ctaText = null, $ctaHref = null)
         </div>
       </div>
     </div>
+    <script>
+      function openApp() {
+        window.location.href = 'ebantay://login';
+
+        // Fallback after 2 seconds (if app not installed)
+        setTimeout(function() {
+          window.location.href = 'https://top.gen.in';
+        }, 2000);
+      }
+      // Auto attempt open after page loads (only on success)
+      <?php if ($isSuccess): ?>
+      setTimeout(function() {
+        openApp();
+      }, 1200);
+      <?php endif; ?>
+    </script>
   </body>
   </html>";
   exit;
@@ -131,9 +148,8 @@ if ($expires > 0 && time() > $expires) {
 $upd = $pdo->prepare("UPDATE users SET is_email_verified = 1, email_verify_token = NULL, email_verify_expires = NULL WHERE id = ?");
 $upd->execute([$user["id"]]);
 
-// Optional CTA: point to your app download or web login page
-$ctaHref = "https://top.gen.in"; // change if you have a login page
-$ctaText = "Go to eBantay";
+$ctaHref = "ebantay://login";
+$ctaText = "Open eBantay App";
 
 if (wantsJson()) jsonOut(200, ["ok"=>true, "message"=>"Email verified"]);
 renderPage("Verification Successful", "success", "Your email has been verified successfully! You can now return to the app and log in.", $ctaText, $ctaHref);
