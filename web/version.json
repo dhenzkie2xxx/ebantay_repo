@@ -1,7 +1,7 @@
 {
-  "latest_version": "1.0.0",
+  "latest_version": "1.0.1",
   "apk_url": "https://top.gen.in/downloads/ebantay-latest.apk",
   "landing_url": "https://top.gen.in",
-  "force_update": true,
-  "release_notes": "Initial public release."
+  "force_update": false,
+  "release_notes": "UI updates, Home screen improvements, panic button behavior"
 }
