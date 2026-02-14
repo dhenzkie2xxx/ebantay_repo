@@ -2,7 +2,7 @@
 // Change these to match your app + file paths
 $APP_NAME = "eBantay";
 $TAGLINE  = "Community Safety Reporting Application";
-$APK_URL  = "/downloads/ebantay-latest.apk";    // relative to domain
+$APK_URL  = "web/downloads/ebantay-latest.apk";    // relative to domain
 $LOGO_URL = "/assets/logowhite.png";           // wide logo (white)
 $DEEPLINK = "ebantay://login";                 // deep link
 ?>
