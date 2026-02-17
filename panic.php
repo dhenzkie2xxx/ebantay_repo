@@ -16,12 +16,16 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
+if (!is_array($data)) {
+  out(400, ["ok" => false, "message" => "Invalid JSON body"]);
+}
+
 $token = trim($data["token"] ?? "");
 $level = trim($data["level"] ?? "");
 $lat = $data["lat"] ?? null;
 $lng = $data["lng"] ?? null;
 $accuracy = $data["accuracy"] ?? null;
-$deviceTime = trim($data["device_time"] ?? ""); // optional
+$deviceTime = trim($data["device_time"] ?? ""); // optional ISO string
 
 if ($token === "" || !in_array($level, ["alert", "urgent"], true) || $lat === null || $lng === null) {
   out(400, ["ok" => false, "message" => "Missing/invalid fields"]);
@@ -31,17 +35,43 @@ if (!is_numeric($lat) || !is_numeric($lng)) {
   out(400, ["ok" => false, "message" => "Invalid coordinates"]);
 }
 
+$lat = (float)$lat;
+$lng = (float)$lng;
+
+if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
+  out(400, ["ok" => false, "message" => "Coordinates out of range"]);
+}
+
 try {
-  // Validate token
-  $q = $pdo->prepare("SELECT id, api_token_expires FROM users WHERE api_token = ? LIMIT 1");
+  // Validate token + user
+  $q = $pdo->prepare("
+    SELECT id, api_token_expires, is_email_verified
+    FROM users
+    WHERE api_token = ?
+    LIMIT 1
+  ");
   $q->execute([$token]);
   $user = $q->fetch(PDO::FETCH_ASSOC);
 
   if (!$user) out(401, ["ok" => false, "message" => "Unauthorized"]);
 
-  $exp = $user["api_token_expires"] ? strtotime($user["api_token_expires"]) : 0;
+  $exp = !empty($user["api_token_expires"]) ? strtotime($user["api_token_expires"]) : 0;
   if ($exp > 0 && time() > $exp) {
     out(401, ["ok" => false, "message" => "Token expired"]);
+  }
+
+  // Optional: block if email not verified (keeps consistent with login.php)
+  if ((int)($user["is_email_verified"] ?? 0) !== 1) {
+    out(403, ["ok" => false, "message" => "Email not verified"]);
+  }
+
+  // Parse device_time safely (avoid 1970 issue)
+  $deviceTimeSql = null;
+  if ($deviceTime !== "") {
+    $ts = strtotime($deviceTime);
+    if ($ts !== false) {
+      $deviceTimeSql = date("Y-m-d H:i:s", $ts);
+    }
   }
 
   // Insert panic request
@@ -50,14 +80,12 @@ try {
     VALUES (?, ?, ?, ?, ?, ?)
   ");
 
-  $deviceTimeSql = $deviceTime !== "" ? date("Y-m-d H:i:s", strtotime($deviceTime)) : null;
-
   $stmt->execute([
-    $user["id"],
+    (int)$user["id"],
     $level,
-    (float)$lat,
-    (float)$lng,
-    $accuracy !== null && is_numeric($accuracy) ? (int)round($accuracy) : null,
+    $lat,
+    $lng,
+    ($accuracy !== null && is_numeric($accuracy)) ? (int)round((float)$accuracy) : null,
     $deviceTimeSql
   ]);
 
