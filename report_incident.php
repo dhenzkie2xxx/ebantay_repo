@@ -64,11 +64,11 @@ try {
 
   // Insert report
   $stmt = $pdo->prepare("
-    INSERT INTO incident_reports
-      (user_id, title, category, description, risk_status, risk_distance_m, risk_radius_m, lat, lng, accuracy_m, device_time)
-    VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ");
+  INSERT INTO incident_reports
+    (user_id, title, category, description, risk_status, risk_distance_m, risk_radius_m, lat, lng, accuracy_m, device_time, created_at, status)
+  VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'PENDING')
+ ");
 
   $stmt->execute([
     (int)$user["id"],
@@ -96,9 +96,9 @@ try {
     if ($count > $max) $count = $max;
 
     $photoStmt = $pdo->prepare("
-      INSERT INTO incident_report_photos (report_id, mime_type, file_name, file_size, image)
-      VALUES (?, ?, ?, ?, ?)
-    ");
+  INSERT INTO incident_report_photos (report_id, mime_type, file_name, file_size, image, thumb, thumb_mime_type, sha256, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+");
 
     for ($i = 0; $i < $count; $i++) {
       $err = $_FILES["photos"]["error"][$i];
@@ -131,14 +131,53 @@ try {
       $bytes = file_get_contents($tmp);
       if ($bytes === false || $bytes === "") continue;
 
+    $sha = hash('sha256', $bytes);
+
+    // thumbnail (requires GD)
+    $thumbBytes = null;
+    $thumbMime = null;
+
+    if (extension_loaded('gd')) {
+    $srcImg = @imagecreatefromstring($bytes);
+    if ($srcImg !== false) {
+        $w = imagesx($srcImg);
+        $h = imagesy($srcImg);
+
+        $maxW = 480; // thumbnail width
+        $scale = $w > 0 ? min(1, $maxW / $w) : 1;
+        $tw = (int)max(1, round($w * $scale));
+        $th = (int)max(1, round($h * $scale));
+
+        $dstImg = imagecreatetruecolor($tw, $th);
+
+        // preserve transparency for png/webp
+        imagealphablending($dstImg, false);
+        imagesavealpha($dstImg, true);
+
+        imagecopyresampled($dstImg, $srcImg, 0, 0, 0, 0, $tw, $th, $w, $h);
+
+        ob_start();
+        // save as JPEG thumb to keep size small (you can switch to png/webp)
+        imagejpeg($dstImg, null, 75);
+        $thumbBytes = ob_get_clean();
+        $thumbMime = "image/jpeg";
+
+        imagedestroy($dstImg);
+        imagedestroy($srcImg);
+    }
+    }
+    
       // IMPORTANT: for BLOB with PDO, send as param; PDO will handle it
-      $photoStmt->execute([
+        $photoStmt->execute([
         $reportId,
         $mime,
         $name,
         $size,
-        $bytes
-      ]);
+        $bytes,
+        $thumbBytes,
+        $thumbMime,
+        $sha
+        ]);
     }
   }
 
@@ -152,5 +191,5 @@ try {
 
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();
-  out(500, ["ok" => false, "message" => "Server error"]);
+  out(500, ["ok" => false, "message" => "Server error", "debug" => $e->getMessage()]);
 }
