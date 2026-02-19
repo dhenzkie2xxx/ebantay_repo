@@ -166,12 +166,6 @@ try {
         imagedestroy($srcImg);
     }
     }
-    
-// TEMPORARY
-    out(200, ["ok"=>true, "gd"=>extension_loaded("gd")]);
-    error_log("GD loaded? " . (extension_loaded("gd") ? "YES" : "NO"));
-
-    
       // IMPORTANT: for BLOB with PDO, send as param; PDO will handle it
         $photoStmt->execute([
         $reportId,
