@@ -137,9 +137,12 @@ try {
     $thumbBytes = null;
     $thumbMime = null;
 
+    error_log("THUMB DEBUG: gd=" . (extension_loaded("gd") ? "YES" : "NO") . " mime={$mime} size={$size}");
+
     if (extension_loaded('gd')) {
     $srcImg = @imagecreatefromstring($bytes);
     if ($srcImg !== false) {
+        error_log("THUMB DEBUG: imagecreatefromstring FAILED mime={$mime} size={$size}");
         $w = imagesx($srcImg);
         $h = imagesy($srcImg);
 
