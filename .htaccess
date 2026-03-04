@@ -1,7 +1,9 @@
 RewriteEngine On
 
 <IfModule mod_headers.c>
+  # Allow only these origins
   SetEnvIf Origin "^http://localhost:5173$" ORIGIN_OK=$0
+  SetEnvIf Origin "^http://127\.0\.0\.1:5173$" ORIGIN_OK=$0
   SetEnvIf Origin "^https://ebantay\.top\.gen\.in$" ORIGIN_OK=$0
 
   Header always set Access-Control-Allow-Origin "%{ORIGIN_OK}e" env=ORIGIN_OK
@@ -11,6 +13,6 @@ RewriteEngine On
   Header always set Access-Control-Max-Age "86400"
 </IfModule>
 
-# OPTIONS short-circuit
+# If Apache answers OPTIONS before PHP, still return 200
 RewriteCond %{REQUEST_METHOD} OPTIONS
 RewriteRule ^ - [R=200,L]

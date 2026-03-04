@@ -1,7 +1,7 @@
 FROM php:8.3-apache
 
 # Enable rewrite + install PDO MySQL
-RUN a2enmod rewrite \
+RUN a2enmod rewrite headers \
   && docker-php-ext-install pdo pdo_mysql
 
 # ✅ Install GD (for thumbnails)
@@ -34,6 +34,10 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 # Copy app
 WORKDIR /var/www/html
 COPY . .
+
+# Ensure Apache allows .htaccess
+COPY apache.conf /etc/apache2/conf-available/ebantay.conf
+RUN a2enconf ebantay
 
 # Install PHP deps
 RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
