@@ -18,31 +18,22 @@ $offset = ($page - 1) * $limit;
 $q = trim($_GET["q"] ?? "");
 $category = trim($_GET["category"] ?? "");
 
-// --- build query ---
+// shared WHERE
+$where = " WHERE 1=1 ";
 $params = [];
 
-$sql = "
-  SELECT
-    r.id, r.title, r.category, r.risk_status, r.risk_distance_m, r.risk_radius_m,
-    r.lat, r.lng, r.created_at, r.status, r.admin_notes, r.reviewed_at, r.resolved_at,
-    u.id AS user_id, u.firstname, u.lastname, u.email
-  FROM incident_reports r
-  JOIN users u ON u.id = r.user_id
-  WHERE 1=1
-";
-
 if ($status !== "ALL") {
-  $sql .= " AND r.status = :status ";
+  $where .= " AND r.status = :status ";
   $params[":status"] = $status;
 }
 
 if ($category !== "") {
-  $sql .= " AND r.category = :category ";
+  $where .= " AND r.category = :category ";
   $params[":category"] = $category;
 }
 
 if ($q !== "") {
-  $sql .= " AND (
+  $where .= " AND (
     r.title LIKE :q
     OR r.description LIKE :q
     OR r.category LIKE :q
@@ -53,20 +44,42 @@ if ($q !== "") {
   $params[":q"] = "%{$q}%";
 }
 
-$sql .= " ORDER BY r.created_at DESC LIMIT :limit OFFSET :offset ";
+// total count (for pagination)
+$countSql = "
+  SELECT COUNT(*) AS total
+  FROM incident_reports r
+  JOIN users u ON u.id = r.user_id
+  $where
+";
+$countStmt = $pdo->prepare($countSql);
+foreach ($params as $k => $v) $countStmt->bindValue($k, $v);
+$countStmt->execute();
+$total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
 
-$stmt = $pdo->prepare($sql);
+// list
+$listSql = "
+  SELECT
+    r.id, r.title, r.category, r.risk_status, r.risk_distance_m, r.risk_radius_m,
+    r.lat, r.lng, r.created_at, r.status, r.admin_notes, r.reviewed_at, r.resolved_at,
+    u.id AS user_id, u.firstname, u.lastname, u.email,
+    (
+      SELECT COUNT(*)
+      FROM incident_report_photos p
+      WHERE p.report_id = r.id
+    ) AS photo_count
+  FROM incident_reports r
+  JOIN users u ON u.id = r.user_id
+  $where
+  ORDER BY r.created_at DESC
+  LIMIT :limit OFFSET :offset
+";
 
-// bind normal params
-foreach ($params as $k => $v) {
-  $stmt->bindValue($k, $v);
-}
-
-// bind LIMIT/OFFSET as ints
+$stmt = $pdo->prepare($listSql);
+foreach ($params as $k => $v) $stmt->bindValue($k, $v);
 $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
 $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
-
 $stmt->execute();
+
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 echo json_encode([
@@ -74,7 +87,7 @@ echo json_encode([
   "status" => $status,
   "page" => $page,
   "limit" => $limit,
-  "count" => count($rows),
+  "total" => $total,
   "reports" => array_map(function($r){
     return [
       "id" => (int)$r["id"],
@@ -90,6 +103,7 @@ echo json_encode([
       "admin_notes" => $r["admin_notes"],
       "reviewed_at" => $r["reviewed_at"],
       "resolved_at" => $r["resolved_at"],
+      "photo_count" => (int)($r["photo_count"] ?? 0),
       "reporter" => [
         "id" => (int)$r["user_id"],
         "firstname" => $r["firstname"],
