@@ -2,29 +2,24 @@
 require_once __DIR__ . "/require_admin.php";
 header("Content-Type: application/json; charset=UTF-8");
 
-$__t0 = microtime(true);
-register_shutdown_function(function() use ($__t0) {
-  error_log("END " . ($_SERVER["REQUEST_URI"] ?? "") . " took " . round((microtime(true)-$__t0)*1000) . "ms");
-});
-
 // --- inputs ---
-$status = strtoupper(trim($_GET["status"] ?? "PENDING"));
-$allowed = ["PENDING","REVIEWED","RESOLVED","REJECTED"];
-if (!in_array($status, $allowed, true)) $status = "PENDING";
+$status = strtoupper(trim($_GET["status"] ?? "ALL"));
+$allowed = ["ALL","PENDING","REVIEWED","RESOLVED","REJECTED"];
+if (!in_array($status, $allowed, true)) $status = "ALL";
 
 $limit = (int)($_GET["limit"] ?? 50);
 if ($limit < 1) $limit = 50;
 if ($limit > 200) $limit = 200;
 
-$q = trim($_GET["q"] ?? "");
-$category = trim($_GET["category"] ?? "");
-
-// paging (optional; you were calling ?page=1)
 $page = (int)($_GET["page"] ?? 1);
 if ($page < 1) $page = 1;
 $offset = ($page - 1) * $limit;
 
-$params = [":status" => $status];
+$q = trim($_GET["q"] ?? "");
+$category = trim($_GET["category"] ?? "");
+
+// --- build query ---
+$params = [];
 
 $sql = "
   SELECT
@@ -33,8 +28,13 @@ $sql = "
     u.id AS user_id, u.firstname, u.lastname, u.email
   FROM incident_reports r
   JOIN users u ON u.id = r.user_id
-  WHERE r.status = :status
+  WHERE 1=1
 ";
+
+if ($status !== "ALL") {
+  $sql .= " AND r.status = :status ";
+  $params[":status"] = $status;
+}
 
 if ($category !== "") {
   $sql .= " AND r.category = :category ";
@@ -42,16 +42,27 @@ if ($category !== "") {
 }
 
 if ($q !== "") {
-  $sql .= " AND (r.title LIKE :q OR r.description LIKE :q OR u.firstname LIKE :q OR u.lastname LIKE :q OR u.email LIKE :q) ";
-  $params[":q"] = "%$q%";
+  $sql .= " AND (
+    r.title LIKE :q
+    OR r.description LIKE :q
+    OR r.category LIKE :q
+    OR u.firstname LIKE :q
+    OR u.lastname LIKE :q
+    OR u.email LIKE :q
+  ) ";
+  $params[":q"] = "%{$q}%";
 }
 
 $sql .= " ORDER BY r.created_at DESC LIMIT :limit OFFSET :offset ";
 
 $stmt = $pdo->prepare($sql);
 
-// bindValue required for LIMIT/OFFSET in PDO
-foreach ($params as $k => $v) $stmt->bindValue($k, $v);
+// bind normal params
+foreach ($params as $k => $v) {
+  $stmt->bindValue($k, $v);
+}
+
+// bind LIMIT/OFFSET as ints
 $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
 $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
 
@@ -63,6 +74,7 @@ echo json_encode([
   "status" => $status,
   "page" => $page,
   "limit" => $limit,
+  "count" => count($rows),
   "reports" => array_map(function($r){
     return [
       "id" => (int)$r["id"],
