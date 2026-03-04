@@ -11,12 +11,13 @@ if ($id <= 0) {
 $stmt = $pdo->prepare("
   SELECT
     r.*,
-    u.firstname, u.lastname, u.email
+    u.firstname, u.lastname, u.email, u.username
   FROM incident_reports r
   JOIN users u ON u.id = r.user_id
   WHERE r.id = ?
   LIMIT 1
 ");
+
 $stmt->execute([$id]);
 $r = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -54,7 +55,8 @@ echo json_encode([
     "reporter" => [
       "firstname" => $r["firstname"],
       "lastname" => $r["lastname"],
-      "email" => $r["email"]
+      "email" => $r["email"],
+      "username" => $r["username"],
     ]
   ]
 ]);
