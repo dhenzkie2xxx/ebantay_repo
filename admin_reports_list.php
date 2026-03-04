@@ -2,6 +2,11 @@
 require_once __DIR__ . "/require_admin.php";
 header("Content-Type: application/json; charset=UTF-8");
 
+$__t0 = microtime(true);
+register_shutdown_function(function() use ($__t0) {
+  error_log("END " . ($_SERVER["REQUEST_URI"] ?? "") . " took " . round((microtime(true)-$__t0)*1000) . "ms");
+});
+
 // --- inputs ---
 $status = strtoupper(trim($_GET["status"] ?? "PENDING"));
 $allowed = ["PENDING","REVIEWED","RESOLVED","REJECTED"];
