@@ -1,0 +1,16 @@
+RewriteEngine On
+
+<IfModule mod_headers.c>
+  SetEnvIf Origin "^http://localhost:5173$" ORIGIN_OK=$0
+  SetEnvIf Origin "^https://ebantay\.top\.gen\.in$" ORIGIN_OK=$0
+
+  Header always set Access-Control-Allow-Origin "%{ORIGIN_OK}e" env=ORIGIN_OK
+  Header always set Vary "Origin"
+  Header always set Access-Control-Allow-Headers "Content-Type, Authorization"
+  Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+  Header always set Access-Control-Max-Age "86400"
+</IfModule>
+
+# OPTIONS short-circuit
+RewriteCond %{REQUEST_METHOD} OPTIONS
+RewriteRule ^ - [R=200,L]
