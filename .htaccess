@@ -1,5 +1,1 @@
 RewriteEngine On
-
-# Only handle OPTIONS early (so Apache can reply 200 even before PHP)
-RewriteCond %{REQUEST_METHOD} OPTIONS
-RewriteRule ^ - [R=200,L]
