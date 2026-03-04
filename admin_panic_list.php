@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
+header("Content-Type: application/json; charset=UTF-8");
+
 $status = strtolower(trim($_GET["status"] ?? "new"));
 $allowed = ["new","ack","resolved"];
 if (!in_array($status, $allowed, true)) $status = "new";

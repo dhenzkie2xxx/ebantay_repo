@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
+header("Content-Type: application/json; charset=UTF-8");
+
 $data = json_decode(file_get_contents("php://input"), true);
 $id = (int)($data["id"] ?? 0);
 $status = strtolower(trim($data["status"] ?? ""));

@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
+header("Content-Type: application/json; charset=UTF-8");
+
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 

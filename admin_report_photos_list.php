@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
+header("Content-Type: application/json; charset=UTF-8");
+
 $reportId = (int)($_GET["report_id"] ?? 0);
 if ($reportId <= 0) {
   http_response_code(400);

@@ -13,10 +13,8 @@ function bearer_token(): string {
   $h =
     $_SERVER["HTTP_AUTHORIZATION"] ??
     $_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ??
-    $_SERVER["Authorization"] ?? // sometimes present
     "";
 
-  // Some servers place it in getallheaders()
   if ($h === "" && function_exists("getallheaders")) {
     $headers = getallheaders();
     if (isset($headers["Authorization"])) $h = $headers["Authorization"];
@@ -29,11 +27,7 @@ function bearer_token(): string {
 }
 
 $token = bearer_token();
-if ($token === "") out(401, [
-  "ok"=>false,
-  "message"=>"Missing Bearer token",
-  "debug_auth" => $_SERVER["HTTP_AUTHORIZATION"] ?? null
-]);
+if ($token === "") out(401, ["ok"=>false, "message"=>"Missing Bearer token"]);
 
 $stmt = $pdo->prepare("
   SELECT id, role, valid, api_token_expires
