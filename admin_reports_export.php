@@ -1,19 +1,8 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
-function bearer_token(): string {
-  $h = $_SERVER["HTTP_AUTHORIZATION"] ?? $_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ?? "";
-
-  if ($h === "" && function_exists("getallheaders")) {
-    $headers = getallheaders();
-    if (isset($headers["Authorization"])) $h = $headers["Authorization"];
-    elseif (isset($headers["authorization"])) $h = $headers["authorization"];
-  }
-
-  if (!$h) return "";
-  if (stripos($h, "Bearer ") !== 0) return "";
-  return trim(substr($h, 7));
-}
+// DO NOT redeclare bearer_token() here.
+// require_admin.php already handles CORS + auth.
 
 if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   http_response_code(405);
