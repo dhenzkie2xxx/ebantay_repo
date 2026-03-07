@@ -141,7 +141,10 @@ try {
   }
 
   if (($user["valid"] ?? "") !== "valid") {
-    out(403, ["ok" => false, "message" => "Your account is not yet validated"]);
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is not yet activated. Please complete account setup or contact the administrator."
+    ]);
   }
 
   $exp = !empty($user["api_token_expires"]) ? strtotime($user["api_token_expires"]) : 0;
