@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/hotspot_lib.php";
+
 header("Content-Type: application/json; charset=UTF-8");
 
 function out($code, $payload) {
@@ -12,48 +14,15 @@ if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
+$days = isset($_GET["days"]) ? (int)$_GET["days"] : 30;
+$days = max(1, min(365, $days));
+
 try {
-  $stmt = $pdo->query("
-    SELECT
-      id,
-      name,
-      lat,
-      lng,
-      radius_m,
-      hotspot_type,
-      risk_level,
-      last_detected_at,
-      created_at
-    FROM crime_hotspots
-    WHERE active = 1
-    ORDER BY
-      CASE
-        WHEN risk_level = 'HIGH' THEN 1
-        WHEN risk_level = 'MEDIUM' THEN 2
-        WHEN risk_level = 'LOW' THEN 3
-        ELSE 4
-      END,
-      id DESC
-  ");
-
-  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-  $hotspots = array_map(function ($r) {
-    return [
-      "id" => (int)$r["id"],
-      "name" => $r["name"],
-      "lat" => (float)$r["lat"],
-      "lng" => (float)$r["lng"],
-      "radius_m" => (int)$r["radius_m"],
-      "hotspot_type" => $r["hotspot_type"],
-      "risk_level" => $r["risk_level"],
-      "last_detected_at" => $r["last_detected_at"],
-      "created_at" => $r["created_at"],
-    ];
-  }, $rows);
+  $hotspots = get_computed_hotspots($pdo, $days);
 
   out(200, [
     "ok" => true,
+    "days" => $days,
     "count" => count($hotspots),
     "hotspots" => $hotspots
   ]);

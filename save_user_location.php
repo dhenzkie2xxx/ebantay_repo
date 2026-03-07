@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/hotspot_lib.php";
+
 header("Content-Type: application/json; charset=UTF-8");
 
 function out($code, $payload) {
@@ -19,18 +21,11 @@ $lat = isset($body["lat"]) ? (float)$body["lat"] : null;
 $lng = isset($body["lng"]) ? (float)$body["lng"] : null;
 $accuracy = isset($body["accuracy"]) ? (int)$body["accuracy"] : null;
 
-$riskCategory = trim($body["risk_category"] ?? "");
-$nearestM = isset($body["nearest_m"]) ? (int)$body["nearest_m"] : null;
-
-$pointLat = isset($body["point_lat"]) ? (float)$body["point_lat"] : null;
-$pointLng = isset($body["point_lng"]) ? (float)$body["point_lng"] : null;
-
 if ($apiToken === "" || $lat === null || $lng === null) {
   out(400, ["ok" => false, "message" => "Missing token/lat/lng"]);
 }
 
 try {
-  // Auth user by api_token (same logic you use elsewhere)
   $stmt = $pdo->prepare("
     SELECT id
     FROM users
@@ -48,6 +43,24 @@ try {
 
   $userId = (int)$user["id"];
 
+  $hotspots = get_computed_hotspots($pdo, 30);
+  $nearest = find_nearest_hotspot($hotspots, $lat, $lng);
+
+  $riskCategory = null;
+  $nearestM = null;
+  $pointLat = null;
+  $pointLng = null;
+
+  if ($nearest) {
+    $nearestM = (int)$nearest["distance_m"];
+    $pointLat = (float)$nearest["lat"];
+    $pointLng = (float)$nearest["lng"];
+
+    if (!empty($nearest["is_inside"]) && ($nearest["highlight_color"] === "green" || $nearest["highlight_color"] === "red")) {
+      $riskCategory = strtoupper($nearest["highlight_color"]);
+    }
+  }
+
   $ins = $pdo->prepare("
     INSERT INTO user_locations
       (user_id, lat, lng, accuracy_m, risk_category, nearest_m, point_lat, point_lng)
@@ -59,13 +72,23 @@ try {
     $lat,
     $lng,
     $accuracy,
-    ($riskCategory !== "" ? $riskCategory : null),
+    $riskCategory,
     $nearestM,
     $pointLat,
     $pointLng
   ]);
 
-  out(200, ["ok" => true]);
+  out(200, [
+    "ok" => true,
+    "risk_category" => $riskCategory,
+    "nearest_m" => $nearestM,
+    "hotspot" => $nearest,
+    "push_sent" => false
+  ]);
 } catch (Throwable $e) {
-  out(500, ["ok" => false, "message" => "Server error"]);
+  out(500, [
+    "ok" => false,
+    "message" => "Server error",
+    "debug" => $e->getMessage()
+  ]);
 }

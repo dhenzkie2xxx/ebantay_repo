@@ -13,116 +13,146 @@ if ($_SERVER["REQUEST_METHOD"] !== "GET") {
 }
 
 $days = isset($_GET["days"]) ? (int)$_GET["days"] : 30;
-if ($days < 1) $days = 1;
-if ($days > 365) $days = 365;
+$days = max(1, min(365, $days));
 
-$category = trim($_GET["category"] ?? "");     // e.g. Theft
+$category = trim($_GET["category"] ?? "");
 $group = isset($_GET["group"]) ? (int)$_GET["group"] : 0;
 
-// bbox (optional)
 $minLat = isset($_GET["minLat"]) ? (float)$_GET["minLat"] : null;
 $maxLat = isset($_GET["maxLat"]) ? (float)$_GET["maxLat"] : null;
 $minLng = isset($_GET["minLng"]) ? (float)$_GET["minLng"] : null;
 $maxLng = isset($_GET["maxLng"]) ? (float)$_GET["maxLng"] : null;
 
-$where = [];
-$params = [];
-
-$where[] = "status <> 'REJECTED'";
-$where[] = "lat IS NOT NULL AND lng IS NOT NULL";
-$where[] = "created_at >= (NOW() - INTERVAL ? DAY)";
-$params[] = $days;
-
-if ($category !== "") {
-  $where[] = "category = ?";
-  $params[] = $category;
-}
-
+$bboxSql = "";
+$bboxParams = [];
 if ($minLat !== null && $maxLat !== null && $minLng !== null && $maxLng !== null) {
-  $where[] = "lat BETWEEN ? AND ?";
-  $where[] = "lng BETWEEN ? AND ?";
-  array_push($params, $minLat, $maxLat, $minLng, $maxLng);
+  $bboxSql = " AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ? ";
+  $bboxParams = [$minLat, $maxLat, $minLng, $maxLng];
 }
-
-$sql = "
-SELECT
-  lat,
-  lng,
-  category,
-  status,
-  created_at
-FROM incident_reports
-WHERE " . implode(" AND ", $where);
 
 try {
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute($params);
-  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  $points = [];
 
-  // weight: status + recency
-  $computeWeight = function($status, $createdAt) {
-    $w = 1;
-    if ($status === "PENDING") $w = 3;
-    else if ($status === "REVIEWED") $w = 2;
-    else if ($status === "RESOLVED") $w = 1;
-    else return 0;
+  if ($category === "" || strcasecmp($category, "Panic") !== 0) {
+    $incidentSql = "
+      SELECT
+        lat,
+        lng,
+        incident_type AS category,
+        date_reported,
+        incident_phase,
+        verification_status,
+        is_hotspot_related
+      FROM incident_reports
+      WHERE
+        lat IS NOT NULL
+        AND lng IS NOT NULL
+        AND incident_phase <> 'REJECTED'
+        AND verification_status NOT IN ('FALSE_REPORT', 'DUPLICATE')
+        AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+        " . ($category !== "" ? " AND incident_type = ? " : "") . "
+        $bboxSql
+    ";
 
-    $ageSec = time() - strtotime($createdAt);
-    if ($ageSec <= 86400) $w += 2;
-    else if ($ageSec <= 7 * 86400) $w += 1;
+    $params = [$days];
+    if ($category !== "") $params[] = $category;
+    $params = array_merge($params, $bboxParams);
 
-    return $w;
-  };
-
-  if ($group === 1) {
-    $grouped = []; // { "Theft": [points], "Assault": [points], ... }
+    $stmt = $pdo->prepare($incidentSql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($rows as $r) {
-      $w = $computeWeight($r["status"], $r["created_at"]);
-      if ($w <= 0) continue;
+      $w = 1;
 
-      $cat = $r["category"] ?? "Unknown";
-      if (!isset($grouped[$cat])) $grouped[$cat] = [];
+      if (($r["verification_status"] ?? "") === "VERIFIED") $w += 1;
+      if (in_array($r["incident_phase"] ?? "", ["BLOTTERED", "UNDER_INVESTIGATION", "FILED_IN_COURT"], true)) {
+        $w += 1;
+      }
+      if ((int)($r["is_hotspot_related"] ?? 0) === 1) $w += 1;
 
-      $grouped[$cat][] = [
+      $ageSec = time() - strtotime($r["date_reported"]);
+      if ($ageSec <= 86400) $w += 2;
+      else if ($ageSec <= 7 * 86400) $w += 1;
+
+      $points[] = [
         "lat" => (float)$r["lat"],
         "lng" => (float)$r["lng"],
         "weight" => $w,
+        "category" => $r["category"] ?: "Other",
+        "source" => "incident_report",
+      ];
+    }
+  }
+
+  if ($category === "" || strcasecmp($category, "Panic") === 0) {
+    $panicSql = "
+      SELECT
+        lat,
+        lng,
+        level,
+        created_at
+      FROM panic_requests
+      WHERE
+        lat IS NOT NULL
+        AND lng IS NOT NULL
+        AND status <> 'resolved'
+        AND created_at >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+        $bboxSql
+    ";
+
+    $params = array_merge([$days], $bboxParams);
+    $stmt = $pdo->prepare($panicSql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as $r) {
+      $w = ($r["level"] === "urgent") ? 5 : 3;
+
+      $ageSec = time() - strtotime($r["created_at"]);
+      if ($ageSec <= 86400) $w += 1;
+
+      $points[] = [
+        "lat" => (float)$r["lat"],
+        "lng" => (float)$r["lng"],
+        "weight" => $w,
+        "category" => "Panic",
+        "source" => "panic_request",
+      ];
+    }
+  }
+
+  if ($group === 1) {
+    $grouped = [];
+    foreach ($points as $p) {
+      $cat = $p["category"] ?? "Unknown";
+      if (!isset($grouped[$cat])) $grouped[$cat] = [];
+      $grouped[$cat][] = [
+        "lat" => $p["lat"],
+        "lng" => $p["lng"],
+        "weight" => $p["weight"],
       ];
     }
 
     out(200, [
       "ok" => true,
       "days" => $days,
-      "category" => $category === "" ? "ALL" : $category,
       "grouped" => true,
       "data" => $grouped,
     ]);
   }
 
-  // non-grouped (single list)
-  $points = [];
-  foreach ($rows as $r) {
-    $w = $computeWeight($r["status"], $r["created_at"]);
-    if ($w <= 0) continue;
-
-    $points[] = [
-      "lat" => (float)$r["lat"],
-      "lng" => (float)$r["lng"],
-      "weight" => $w,
-      "category" => $r["category"],
-    ];
-  }
-
   out(200, [
     "ok" => true,
     "days" => $days,
-    "category" => $category === "" ? "ALL" : $category,
     "grouped" => false,
     "count" => count($points),
-    "points" => $points
+    "points" => $points,
   ]);
-
 } catch (Throwable $e) {
-  out(500, ["ok" => false, "message" => "Server error"]);
+  out(500, [
+    "ok" => false,
+    "message" => "Server error",
+    "debug" => $e->getMessage()
+  ]);
 }
