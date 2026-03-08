@@ -1,9 +1,6 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
-// DO NOT redeclare bearer_token() here.
-// require_admin.php already handles CORS + auth.
-
 if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   http_response_code(405);
   header("Content-Type: application/json; charset=UTF-8");
@@ -11,43 +8,46 @@ if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   exit;
 }
 
-$status = strtoupper(trim($_GET["status"] ?? "ALL"));
-$allowed = ["ALL", "PENDING", "REVIEWED", "RESOLVED", "REJECTED"];
-if (!in_array($status, $allowed, true)) $status = "ALL";
+$verification_status = strtoupper(trim($_GET["status"] ?? "ALL"));
+$allowed = ["ALL","PENDING","VERIFIED","FALSE_REPORT","DUPLICATE"];
+if (!in_array($verification_status, $allowed, true)) $verification_status = "ALL";
 
 $q = trim($_GET["q"] ?? "");
 $category = trim($_GET["category"] ?? "");
-$idsRaw = trim($_GET["ids"] ?? ""); // comma-separated optional
+$idsRaw = trim($_GET["ids"] ?? "");
 
 $where = " WHERE 1=1 ";
 $params = [];
 
-if ($status !== "ALL") {
-  $where .= " AND r.status = :status ";
-  $params[":status"] = $status;
+if ($verification_status !== "ALL") {
+  $where .= " AND r.verification_status = :verification_status ";
+  $params[":verification_status"] = $verification_status;
 }
 
 if ($category !== "") {
-  $where .= " AND r.category = :category ";
+  $where .= " AND (r.incident_type = :category OR r.crime_category = :category) ";
   $params[":category"] = $category;
 }
 
 if ($q !== "") {
   $where .= " AND (
-    r.title LIKE :q
-    OR r.description LIKE :q
-    OR r.category LIKE :q
+    r.incident_code LIKE :q
+    OR r.title LIKE :q
+    OR r.narrative LIKE :q
+    OR r.incident_type LIKE :q
+    OR r.crime_category LIKE :q
     OR u.firstname LIKE :q
     OR u.lastname LIKE :q
     OR u.email LIKE :q
+    OR r.barangay LIKE :q
+    OR r.city_municipality LIKE :q
   ) ";
   $params[":q"] = "%{$q}%";
 }
 
-$idList = [];
 if ($idsRaw !== "") {
   $idList = array_values(array_unique(array_filter(array_map("intval", explode(",", $idsRaw)), fn($v) => $v > 0)));
-  if (count($idList) > 0) {
+  if ($idList) {
     $ph = [];
     foreach ($idList as $i => $id) {
       $key = ":id{$i}";
@@ -61,10 +61,14 @@ if ($idsRaw !== "") {
 $sql = "
   SELECT
     r.id,
+    r.incident_code,
     r.title,
-    r.category,
-    r.description,
-    r.status,
+    r.incident_type,
+    r.crime_category,
+    r.narrative,
+    r.verification_status,
+    r.incident_phase,
+    r.case_status,
     r.risk_status,
     r.risk_distance_m,
     r.risk_radius_m,
@@ -73,6 +77,11 @@ $sql = "
     r.accuracy_m,
     r.device_time,
     r.created_at,
+    r.date_reported,
+    r.date_incident_from,
+    r.barangay,
+    r.city_municipality,
+    r.province,
     r.admin_notes,
     r.reviewed_at,
     r.resolved_at,
@@ -80,15 +89,13 @@ $sql = "
     u.lastname,
     u.email
   FROM incident_reports r
-  JOIN users u ON u.id = r.user_id
+  LEFT JOIN users u ON u.id = r.reporter_user_id
   $where
   ORDER BY r.created_at DESC
 ";
 
 $stmt = $pdo->prepare($sql);
-foreach ($params as $k => $v) {
-  $stmt->bindValue($k, $v);
-}
+foreach ($params as $k => $v) $stmt->bindValue($k, $v);
 $stmt->execute();
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -100,16 +107,18 @@ header("Pragma: no-cache");
 header("Expires: 0");
 
 $out = fopen("php://output", "w");
-
-// UTF-8 BOM for Excel
 fprintf($out, chr(0xEF) . chr(0xBB) . chr(0xBF));
 
 fputcsv($out, [
   "ID",
+  "Incident Code",
   "Title",
-  "Category",
-  "Description",
-  "Status",
+  "Incident Type",
+  "Crime Category",
+  "Narrative",
+  "Verification Status",
+  "Incident Phase",
+  "Case Status",
   "Risk Status",
   "Risk Distance (m)",
   "Risk Radius (m)",
@@ -118,6 +127,11 @@ fputcsv($out, [
   "Accuracy (m)",
   "Device Time",
   "Created At",
+  "Date Reported",
+  "Date Incident From",
+  "Barangay",
+  "City/Municipality",
+  "Province",
   "Admin Notes",
   "Reviewed At",
   "Resolved At",
@@ -129,10 +143,14 @@ fputcsv($out, [
 foreach ($rows as $r) {
   fputcsv($out, [
     $r["id"],
+    $r["incident_code"],
     $r["title"],
-    $r["category"],
-    $r["description"],
-    $r["status"],
+    $r["incident_type"],
+    $r["crime_category"],
+    $r["narrative"],
+    $r["verification_status"],
+    $r["incident_phase"],
+    $r["case_status"],
     $r["risk_status"],
     $r["risk_distance_m"],
     $r["risk_radius_m"],
@@ -141,6 +159,11 @@ foreach ($rows as $r) {
     $r["accuracy_m"],
     $r["device_time"],
     $r["created_at"],
+    $r["date_reported"],
+    $r["date_incident_from"],
+    $r["barangay"],
+    $r["city_municipality"],
+    $r["province"],
     $r["admin_notes"],
     $r["reviewed_at"],
     $r["resolved_at"],

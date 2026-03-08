@@ -2,13 +2,12 @@
 require_once __DIR__ . "/require_admin.php";
 header("Content-Type: application/json; charset=UTF-8");
 
-// --- inputs ---
-$status = strtoupper(trim($_GET["status"] ?? "ALL"));
-$allowed = ["ALL","PENDING","REVIEWED","RESOLVED","REJECTED"];
-if (!in_array($status, $allowed, true)) $status = "ALL";
+$verification_status = strtoupper(trim($_GET["status"] ?? "ALL"));
+$allowed = ["ALL","PENDING","VERIFIED","FALSE_REPORT","DUPLICATE"];
+if (!in_array($verification_status, $allowed, true)) $verification_status = "ALL";
 
-$limit = (int)($_GET["limit"] ?? 50);
-if ($limit < 1) $limit = 50;
+$limit = (int)($_GET["limit"] ?? 10);
+if ($limit < 1) $limit = 10;
 if ($limit > 200) $limit = 200;
 
 $page = (int)($_GET["page"] ?? 1);
@@ -18,57 +17,84 @@ $offset = ($page - 1) * $limit;
 $q = trim($_GET["q"] ?? "");
 $category = trim($_GET["category"] ?? "");
 
-// shared WHERE
 $where = " WHERE 1=1 ";
 $params = [];
 
-if ($status !== "ALL") {
-  $where .= " AND r.status = :status ";
-  $params[":status"] = $status;
+if ($verification_status !== "ALL") {
+  $where .= " AND r.verification_status = :verification_status ";
+  $params[":verification_status"] = $verification_status;
 }
 
 if ($category !== "") {
-  $where .= " AND r.category = :category ";
+  $where .= " AND (r.incident_type = :category OR r.crime_category = :category) ";
   $params[":category"] = $category;
 }
 
 if ($q !== "") {
   $where .= " AND (
-    r.title LIKE :q
-    OR r.description LIKE :q
-    OR r.category LIKE :q
+    r.incident_code LIKE :q
+    OR r.title LIKE :q
+    OR r.narrative LIKE :q
+    OR r.incident_type LIKE :q
+    OR r.crime_category LIKE :q
     OR u.firstname LIKE :q
     OR u.lastname LIKE :q
     OR u.email LIKE :q
+    OR r.barangay LIKE :q
+    OR r.city_municipality LIKE :q
   ) ";
   $params[":q"] = "%{$q}%";
 }
 
-// total count (for pagination)
 $countSql = "
   SELECT COUNT(*) AS total
   FROM incident_reports r
-  JOIN users u ON u.id = r.user_id
+  LEFT JOIN users u ON u.id = r.reporter_user_id
   $where
 ";
+
 $countStmt = $pdo->prepare($countSql);
 foreach ($params as $k => $v) $countStmt->bindValue($k, $v);
 $countStmt->execute();
 $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
 
-// list
 $listSql = "
   SELECT
-    r.id, r.title, r.category, r.risk_status, r.risk_distance_m, r.risk_radius_m,
-    r.lat, r.lng, r.created_at, r.status, r.admin_notes, r.reviewed_at, r.resolved_at,
-    u.id AS user_id, u.firstname, u.lastname, u.email,
+    r.id,
+    r.incident_code,
+    r.title,
+    r.incident_type,
+    r.crime_category,
+    r.narrative,
+    r.risk_status,
+    r.risk_distance_m,
+    r.risk_radius_m,
+    r.is_hotspot_related,
+    r.hotspot_id,
+    r.lat,
+    r.lng,
+    r.barangay,
+    r.city_municipality,
+    r.created_at,
+    r.date_reported,
+    r.date_incident_from,
+    r.verification_status,
+    r.incident_phase,
+    r.case_status,
+    r.admin_notes,
+    r.reviewed_at,
+    r.resolved_at,
+    u.id AS user_id,
+    u.firstname,
+    u.lastname,
+    u.email,
     (
       SELECT COUNT(*)
       FROM incident_report_photos p
-      WHERE p.report_id = r.id
+      WHERE p.incident_id = r.id
     ) AS photo_count
   FROM incident_reports r
-  JOIN users u ON u.id = r.user_id
+  LEFT JOIN users u ON u.id = r.reporter_user_id
   $where
   ORDER BY r.created_at DESC
   LIMIT :limit OFFSET :offset
@@ -84,31 +110,42 @@ $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 echo json_encode([
   "ok" => true,
-  "status" => $status,
+  "status" => $verification_status,
   "page" => $page,
   "limit" => $limit,
   "total" => $total,
   "reports" => array_map(function($r){
     return [
       "id" => (int)$r["id"],
+      "incident_code" => $r["incident_code"],
       "title" => $r["title"],
-      "category" => $r["category"],
+      "category" => $r["incident_type"],
+      "crime_category" => $r["crime_category"],
+      "description" => $r["narrative"],
+      "verification_status" => $r["verification_status"],
+      "incident_phase" => $r["incident_phase"],
+      "case_status" => $r["case_status"],
       "risk_status" => $r["risk_status"],
       "risk_distance_m" => $r["risk_distance_m"] !== null ? (int)$r["risk_distance_m"] : null,
-      "risk_radius_m" => (int)$r["risk_radius_m"],
-      "lat" => (float)$r["lat"],
-      "lng" => (float)$r["lng"],
+      "risk_radius_m" => $r["risk_radius_m"] !== null ? (int)$r["risk_radius_m"] : null,
+      "is_hotspot_related" => (int)$r["is_hotspot_related"],
+      "hotspot_id" => $r["hotspot_id"] !== null ? (int)$r["hotspot_id"] : null,
+      "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
+      "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
+      "barangay" => $r["barangay"],
+      "city_municipality" => $r["city_municipality"],
       "created_at" => $r["created_at"],
-      "status" => $r["status"],
+      "date_reported" => $r["date_reported"],
+      "date_incident_from" => $r["date_incident_from"],
       "admin_notes" => $r["admin_notes"],
       "reviewed_at" => $r["reviewed_at"],
       "resolved_at" => $r["resolved_at"],
       "photo_count" => (int)($r["photo_count"] ?? 0),
       "reporter" => [
-        "id" => (int)$r["user_id"],
+        "id" => $r["user_id"] !== null ? (int)$r["user_id"] : null,
         "firstname" => $r["firstname"],
         "lastname" => $r["lastname"],
-        "email" => $r["email"],
+        "email" => $r["email"]
       ]
     ];
   }, $rows)
