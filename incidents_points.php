@@ -16,12 +16,6 @@ $days = isset($_GET["days"]) ? (int)$_GET["days"] : 30;
 $days = max(1, min(365, $days));
 
 $category = trim($_GET["category"] ?? "");
-
-/* Normalize category */
-if ($category !== "") {
-  $category = mb_substr($category, 0, 100);
-}
-
 $group = isset($_GET["group"]) ? (int)$_GET["group"] : 0;
 
 $minLat = isset($_GET["minLat"]) ? (float)$_GET["minLat"] : null;
@@ -36,15 +30,22 @@ if ($minLat !== null && $maxLat !== null && $minLng !== null && $maxLng !== null
   $bboxParams = [$minLat, $maxLat, $minLng, $maxLng];
 }
 
+$isPanicOnly = strcasecmp($category, "Panic") === 0;
+$isAll = ($category === "" || strcasecmp($category, "All") === 0);
+
+$validCrimeGroups = ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"];
+$isCrimeGroup = in_array(strtoupper($category), $validCrimeGroups, true);
+
 try {
   $points = [];
 
-  if ($category === "" || strcasecmp($category, "Panic") !== 0) {
+  if (!$isPanicOnly) {
     $incidentSql = "
       SELECT
         lat,
         lng,
         incident_type AS category,
+        crime_category,
         date_reported,
         incident_phase,
         verification_status,
@@ -56,12 +57,21 @@ try {
         AND incident_phase <> 'REJECTED'
         AND verification_status NOT IN ('FALSE_REPORT', 'DUPLICATE')
         AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
-        " . ($category !== "" ? " AND LOWER(incident_type) = LOWER(?) " : "") . "
-        $bboxSql
     ";
 
     $params = [$days];
-    if ($category !== "") $params[] = $category;
+
+    if (!$isAll) {
+      if ($isCrimeGroup) {
+        $incidentSql .= " AND crime_category = ? ";
+        $params[] = strtoupper($category);
+      } else {
+        $incidentSql .= " AND incident_type = ? ";
+        $params[] = $category;
+      }
+    }
+
+    $incidentSql .= $bboxSql;
     $params = array_merge($params, $bboxParams);
 
     $stmt = $pdo->prepare($incidentSql);
@@ -72,9 +82,11 @@ try {
       $w = 1;
 
       if (($r["verification_status"] ?? "") === "VERIFIED") $w += 1;
+
       if (in_array($r["incident_phase"] ?? "", ["BLOTTERED", "UNDER_INVESTIGATION", "FILED_IN_COURT"], true)) {
         $w += 1;
       }
+
       if ((int)($r["is_hotspot_related"] ?? 0) === 1) $w += 1;
 
       $ageSec = time() - strtotime($r["date_reported"]);
@@ -86,12 +98,13 @@ try {
         "lng" => (float)$r["lng"],
         "weight" => $w,
         "category" => $r["category"] ?: "Other",
+        "crime_category" => $r["crime_category"] ?: "OTHER",
         "source" => "incident_report",
       ];
     }
   }
 
-  if ($category === "" || strcasecmp($category, "Panic") === 0) {
+  if ($isAll || $isPanicOnly) {
     $panicSql = "
       SELECT
         lat,
@@ -123,6 +136,7 @@ try {
         "lng" => (float)$r["lng"],
         "weight" => $w,
         "category" => "Panic",
+        "crime_category" => "PANIC",
         "source" => "panic_request",
       ];
     }
@@ -130,6 +144,7 @@ try {
 
   if ($group === 1) {
     $grouped = [];
+
     foreach ($points as $p) {
       $cat = $p["category"] ?? "Unknown";
       if (!isset($grouped[$cat])) $grouped[$cat] = [];
