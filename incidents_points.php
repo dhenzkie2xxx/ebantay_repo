@@ -30,48 +30,53 @@ if ($minLat !== null && $maxLat !== null && $minLng !== null && $maxLng !== null
   $bboxParams = [$minLat, $maxLat, $minLng, $maxLng];
 }
 
-$isPanicOnly = strcasecmp($category, "Panic") === 0;
-$isAll = ($category === "" || strcasecmp($category, "All") === 0);
-
-$validCrimeGroups = ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"];
-$isCrimeGroup = in_array(strtoupper($category), $validCrimeGroups, true);
-
 try {
-  $points = [];
+  $verifiedPoints = [];
+  $pendingMarkers = [];
 
-  if (!$isPanicOnly) {
+  /**
+   * INCIDENT REPORTS
+   * VERIFIED -> heatmap
+   * PENDING / UNDER_VERIFICATION -> map markers
+   * FALSE_REPORT -> excluded
+   * DUPLICATE -> deduplicated by exact data grouping
+   */
+  if ($category === "" || strcasecmp($category, "Panic") !== 0) {
     $incidentSql = "
       SELECT
+        MIN(id) AS sample_id,
         lat,
         lng,
         incident_type AS category,
-        crime_category,
-        date_reported,
-        incident_phase,
         verification_status,
-        is_hotspot_related
+        incident_phase,
+        title,
+        narrative,
+        date_reported,
+        date_incident_from,
+        COUNT(*) AS duplicate_count
       FROM incident_reports
       WHERE
         lat IS NOT NULL
         AND lng IS NOT NULL
         AND incident_phase <> 'REJECTED'
-        AND verification_status NOT IN ('FALSE_REPORT', 'DUPLICATE')
+        AND verification_status <> 'FALSE_REPORT'
         AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+        " . ($category !== "" ? " AND incident_type = ? " : "") . "
+        $bboxSql
+      GROUP BY
+        lat,
+        lng,
+        incident_type,
+        COALESCE(date_incident_from, date_reported),
+        verification_status,
+        incident_phase,
+        COALESCE(title, ''),
+        COALESCE(narrative, '')
     ";
 
     $params = [$days];
-
-    if (!$isAll) {
-      if ($isCrimeGroup) {
-        $incidentSql .= " AND crime_category = ? ";
-        $params[] = strtoupper($category);
-      } else {
-        $incidentSql .= " AND incident_type = ? ";
-        $params[] = $category;
-      }
-    }
-
-    $incidentSql .= $bboxSql;
+    if ($category !== "") $params[] = $category;
     $params = array_merge($params, $bboxParams);
 
     $stmt = $pdo->prepare($incidentSql);
@@ -79,38 +84,67 @@ try {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($rows as $r) {
-      $w = 1;
+      $verificationStatus = strtoupper(trim($r["verification_status"] ?? ""));
+      $incidentPhase = strtoupper(trim($r["incident_phase"] ?? ""));
+      $dateBasis = $r["date_incident_from"] ?: $r["date_reported"];
 
-      if (($r["verification_status"] ?? "") === "VERIFIED") $w += 1;
-
-      if (in_array($r["incident_phase"] ?? "", ["BLOTTERED", "UNDER_INVESTIGATION", "FILED_IN_COURT"], true)) {
-        $w += 1;
+      $weight = 1;
+      if ($verificationStatus === "VERIFIED") $weight += 2;
+      if (in_array($incidentPhase, ["BLOTTERED", "UNDER_INVESTIGATION", "FILED_IN_COURT"], true)) {
+        $weight += 1;
       }
 
-      if ((int)($r["is_hotspot_related"] ?? 0) === 1) $w += 1;
+      $ageSec = time() - strtotime($dateBasis);
+      if ($ageSec <= 86400) $weight += 2;
+      else if ($ageSec <= 7 * 86400) $weight += 1;
 
-      $ageSec = time() - strtotime($r["date_reported"]);
-      if ($ageSec <= 86400) $w += 2;
-      else if ($ageSec <= 7 * 86400) $w += 1;
-
-      $points[] = [
+      $basePoint = [
+        "id" => (int)$r["sample_id"],
         "lat" => (float)$r["lat"],
         "lng" => (float)$r["lng"],
-        "weight" => $w,
         "category" => $r["category"] ?: "Other",
-        "crime_category" => $r["crime_category"] ?: "OTHER",
+        "title" => $r["title"],
+        "narrative" => $r["narrative"],
+        "date_reported" => $r["date_reported"],
+        "date_incident_from" => $r["date_incident_from"],
+        "verification_status" => $verificationStatus,
+        "incident_phase" => $incidentPhase,
+        "duplicate_count" => (int)$r["duplicate_count"],
         "source" => "incident_report",
       ];
+
+      // VERIFIED = heatmap only
+      if ($verificationStatus === "VERIFIED") {
+        $verifiedPoints[] = array_merge($basePoint, [
+          "weight" => $weight
+        ]);
+        continue;
+      }
+
+      // FALSE_REPORT already excluded above
+      // PENDING / UNDER_VERIFICATION / not yet verified = marker
+      if (in_array($verificationStatus, ["PENDING", "DUPLICATE"], true) || $incidentPhase === "UNDER_VERIFICATION") {
+        $pendingMarkers[] = array_merge($basePoint, [
+          "marker_type" => "report",
+          "icon" => "description"
+        ]);
+      }
     }
   }
 
-  if ($isAll || $isPanicOnly) {
+  /**
+   * PANIC REQUESTS
+   * always markers, not heatmap
+   */
+  if ($category === "" || strcasecmp($category, "Panic") === 0) {
     $panicSql = "
       SELECT
+        MIN(id) AS sample_id,
         lat,
         lng,
         level,
-        created_at
+        created_at,
+        COUNT(*) AS duplicate_count
       FROM panic_requests
       WHERE
         lat IS NOT NULL
@@ -118,6 +152,11 @@ try {
         AND status <> 'resolved'
         AND created_at >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
         $bboxSql
+      GROUP BY
+        lat,
+        lng,
+        level,
+        created_at
     ";
 
     $params = array_merge([$days], $bboxParams);
@@ -126,17 +165,16 @@ try {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($rows as $r) {
-      $w = ($r["level"] === "urgent") ? 5 : 3;
-
-      $ageSec = time() - strtotime($r["created_at"]);
-      if ($ageSec <= 86400) $w += 1;
-
-      $points[] = [
+      $pendingMarkers[] = [
+        "id" => (int)$r["sample_id"],
         "lat" => (float)$r["lat"],
         "lng" => (float)$r["lng"],
-        "weight" => $w,
         "category" => "Panic",
-        "crime_category" => "PANIC",
+        "level" => $r["level"],
+        "created_at" => $r["created_at"],
+        "duplicate_count" => (int)$r["duplicate_count"],
+        "marker_type" => "panic",
+        "icon" => "priority-high",
         "source" => "panic_request",
       ];
     }
@@ -144,8 +182,7 @@ try {
 
   if ($group === 1) {
     $grouped = [];
-
-    foreach ($points as $p) {
+    foreach ($verifiedPoints as $p) {
       $cat = $p["category"] ?? "Unknown";
       if (!isset($grouped[$cat])) $grouped[$cat] = [];
       $grouped[$cat][] = [
@@ -160,6 +197,7 @@ try {
       "days" => $days,
       "grouped" => true,
       "data" => $grouped,
+      "pending_markers" => $pendingMarkers,
     ]);
   }
 
@@ -167,8 +205,9 @@ try {
     "ok" => true,
     "days" => $days,
     "grouped" => false,
-    "count" => count($points),
-    "points" => $points,
+    "count" => count($verifiedPoints),
+    "points" => $verifiedPoints,          // heatmap only
+    "pending_markers" => $pendingMarkers, // marker icons
   ]);
 } catch (Throwable $e) {
   out(500, [
