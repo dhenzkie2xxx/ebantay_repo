@@ -16,6 +16,12 @@ $days = isset($_GET["days"]) ? (int)$_GET["days"] : 30;
 $days = max(1, min(365, $days));
 
 $category = trim($_GET["category"] ?? "");
+
+/* Normalize category */
+if ($category !== "") {
+  $category = mb_substr($category, 0, 100);
+}
+
 $group = isset($_GET["group"]) ? (int)$_GET["group"] : 0;
 
 $minLat = isset($_GET["minLat"]) ? (float)$_GET["minLat"] : null;
@@ -50,7 +56,7 @@ try {
         AND incident_phase <> 'REJECTED'
         AND verification_status NOT IN ('FALSE_REPORT', 'DUPLICATE')
         AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
-        " . ($category !== "" ? " AND incident_type = ? " : "") . "
+        " . ($category !== "" ? " AND LOWER(incident_type) = LOWER(?) " : "") . "
         $bboxSql
     ";
 
