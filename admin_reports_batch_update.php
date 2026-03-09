@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/hotspot_lib.php";
+
 header("Content-Type: application/json; charset=UTF-8");
 
 $raw = file_get_contents("php://input");
@@ -42,7 +44,7 @@ try {
   $ph = implode(",", array_fill(0, count($ids), "?"));
 
   $sel = $pdo->prepare("
-    SELECT id, verification_status, incident_phase, case_status
+    SELECT id, lat, lng, verification_status, incident_phase, case_status
     FROM incident_reports
     WHERE id IN ($ph)
   ");
@@ -107,6 +109,16 @@ try {
       $adminId
     ]);
   }
+
+  foreach ($oldRows as $row) {
+    hotspot_refresh_incident_link($pdo, (int)$row["id"]);
+
+    if ($row["lat"] !== null && $row["lng"] !== null) {
+      hotspot_refresh_nearby_links($pdo, (float)$row["lat"], (float)$row["lng"], 500);
+    }
+  }
+
+  hotspot_deactivate_orphan_hotspots($pdo);
 
   $pdo->commit();
 

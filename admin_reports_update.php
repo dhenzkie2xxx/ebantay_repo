@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/hotspot_lib.php";
+
 header("Content-Type: application/json; charset=UTF-8");
 
 $raw = file_get_contents("php://input");
@@ -30,7 +32,7 @@ $adminId = (int)($AUTH_USER["id"] ?? 0);
 $now = gmdate("Y-m-d H:i:s");
 
 $oldStmt = $pdo->prepare("
-  SELECT verification_status, incident_phase, case_status
+  SELECT id, lat, lng, verification_status, incident_phase, case_status
   FROM incident_reports
   WHERE id = ?
   LIMIT 1
@@ -108,11 +110,29 @@ try {
     $adminId
   ]);
 
+  // Refresh hotspot link for the current incident
+  hotspot_refresh_incident_link($pdo, $id);
+
+  // Refresh nearby incidents too, so cluster linkage stays consistent
+  if ($old["lat"] !== null && $old["lng"] !== null) {
+    hotspot_refresh_nearby_links($pdo, (float)$old["lat"], (float)$old["lng"], 500);
+  }
+
+  // Disable hotspots that no longer have any verified linked incidents
+  hotspot_deactivate_orphan_hotspots($pdo);
+
   $pdo->commit();
 
-  echo json_encode(["ok"=>true, "message"=>"Updated"]);
+  echo json_encode([
+    "ok" => true,
+    "message" => "Updated"
+  ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();
   http_response_code(500);
-  echo json_encode(["ok"=>false, "message"=>"Server error", "debug"=>$e->getMessage()]);
+  echo json_encode([
+    "ok" => false,
+    "message" => "Server error",
+    "debug" => $e->getMessage()
+  ]);
 }
