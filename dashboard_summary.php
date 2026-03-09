@@ -1,11 +1,6 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 
-$__t0 = microtime(true);
-register_shutdown_function(function() use ($__t0) {
-  error_log("END " . ($_SERVER["REQUEST_URI"] ?? "") . " took " . round((microtime(true)-$__t0)*1000) . "ms");
-});
-
 header("Content-Type: application/json; charset=UTF-8");
 
 function one($pdo, $sql) {
