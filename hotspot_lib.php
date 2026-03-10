@@ -537,3 +537,101 @@ function hotspot_deactivate_orphan_hotspots(PDO $pdo): void {
     $upd->execute([(int)$id]);
   }
 }
+
+function get_users_inside_hotspot(PDO $pdo, int $hotspotId, int $locationFreshMinutes = 30): array {
+  $stmt = $pdo->prepare("
+    SELECT id, lat, lng, radius_m, name, risk_level
+    FROM crime_hotspots
+    WHERE id = ? AND active = 1
+    LIMIT 1
+  ");
+  $stmt->execute([$hotspotId]);
+  $hotspot = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$hotspot) return [];
+
+  $hLat = (float)$hotspot["lat"];
+  $hLng = (float)$hotspot["lng"];
+  $radius = (int)$hotspot["radius_m"];
+
+  $locStmt = $pdo->prepare("
+    SELECT ul.user_id, ul.lat, ul.lng, ul.created_at, u.firstname, u.lastname, u.email
+    FROM user_locations ul
+    JOIN users u ON u.id = ul.user_id
+    JOIN (
+      SELECT user_id, MAX(created_at) AS latest_created_at
+      FROM user_locations
+      WHERE created_at >= (UTC_TIMESTAMP() - INTERVAL ? MINUTE)
+      GROUP BY user_id
+    ) latest
+      ON latest.user_id = ul.user_id
+     AND latest.latest_created_at = ul.created_at
+    WHERE u.valid = 'valid'
+  ");
+  $locStmt->execute([$locationFreshMinutes]);
+  $rows = $locStmt->fetchAll(PDO::FETCH_ASSOC);
+
+  $users = [];
+  foreach ($rows as $r) {
+    $d = hotspot_distance_meters(
+      $hLat,
+      $hLng,
+      (float)$r["lat"],
+      (float)$r["lng"]
+    );
+
+    if ($d <= $radius) {
+      $users[] = [
+        "user_id" => (int)$r["user_id"],
+        "firstname" => $r["firstname"],
+        "lastname" => $r["lastname"],
+        "email" => $r["email"],
+        "distance_m" => (int)round($d),
+      ];
+    }
+  }
+
+  return $users;
+}
+
+function create_hotspot_broadcast_alerts(
+  PDO $pdo,
+  int $hotspotId,
+  ?int $incidentId,
+  string $title,
+  string $message,
+  string $severity = "HIGH"
+): array {
+  $targets = get_users_inside_hotspot($pdo, $hotspotId, 30);
+
+  if (!$targets) {
+    return [
+      "created" => 0,
+      "targets" => []
+    ];
+  }
+
+  $stmt = $pdo->prepare("
+    INSERT INTO notification_alerts
+    (user_id, type, title, message, hotspot_id, incident_id, severity, is_read, created_at)
+    VALUES (?, 'HOTSPOT_ALERT', ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP())
+  ");
+
+  $created = 0;
+  foreach ($targets as $t) {
+    $stmt->execute([
+      $t["user_id"],
+      $title,
+      $message,
+      $hotspotId,
+      $incidentId,
+      $severity
+    ]);
+    $created++;
+  }
+
+  return [
+    "created" => $created,
+    "targets" => $targets
+  ];
+}

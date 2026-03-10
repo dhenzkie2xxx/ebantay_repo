@@ -1,0 +1,71 @@
+<?php
+require_once __DIR__ . "/db.php";
+
+header("Content-Type: application/json; charset=UTF-8");
+
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
+  exit;
+}
+
+function bearer_token(): string {
+  $h =
+    $_SERVER["HTTP_AUTHORIZATION"] ??
+    $_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ??
+    "";
+
+  if ($h === "" && function_exists("getallheaders")) {
+    $headers = getallheaders();
+    if (isset($headers["Authorization"])) $h = $headers["Authorization"];
+    elseif (isset($headers["authorization"])) $h = $headers["authorization"];
+  }
+
+  if (!$h) return "";
+  if (stripos($h, "Bearer ") !== 0) return "";
+  return trim(substr($h, 7));
+}
+
+$token = bearer_token();
+if ($token === "") out(401, ["ok"=>false, "message"=>"Missing token"]);
+
+$stmt = $pdo->prepare("
+  SELECT id
+  FROM users
+  WHERE api_token = ?
+    AND valid = 'valid'
+  LIMIT 1
+");
+$stmt->execute([$token]);
+$user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$user) out(401, ["ok"=>false, "message"=>"Invalid token"]);
+
+$userId = (int)$user["id"];
+
+$list = $pdo->prepare("
+  SELECT id, type, title, message, hotspot_id, incident_id, severity, is_read, created_at
+  FROM notification_alerts
+  WHERE user_id = ?
+  ORDER BY created_at DESC
+  LIMIT 20
+");
+$list->execute([$userId]);
+$rows = $list->fetchAll(PDO::FETCH_ASSOC);
+
+echo json_encode([
+  "ok" => true,
+  "alerts" => array_map(function($r) {
+    return [
+      "id" => (int)$r["id"],
+      "type" => $r["type"],
+      "title" => $r["title"],
+      "message" => $r["message"],
+      "hotspot_id" => $r["hotspot_id"] !== null ? (int)$r["hotspot_id"] : null,
+      "incident_id" => $r["incident_id"] !== null ? (int)$r["incident_id"] : null,
+      "severity" => $r["severity"],
+      "is_read" => (int)$r["is_read"],
+      "created_at" => $r["created_at"]
+    ];
+  }, $rows)
+]);
