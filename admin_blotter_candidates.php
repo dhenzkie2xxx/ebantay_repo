@@ -4,13 +4,22 @@ require_once __DIR__ . "/require_admin.php";
 header("Content-Type: application/json; charset=UTF-8");
 
 $q = trim($_GET["q"] ?? "");
+$mode = strtoupper(trim($_GET["mode"] ?? "ALL")); // ALL | NEW | BLOTTERED
 
-$where = "
-  WHERE verification_status = 'VERIFIED'
-    AND (blotter_entry_number IS NULL OR blotter_entry_number = '')
-";
-
+$where = " WHERE 1=1 ";
 $params = [];
+
+if ($mode === "NEW") {
+  $where .= " AND verification_status = 'VERIFIED'
+              AND (blotter_entry_number IS NULL OR blotter_entry_number = '') ";
+} elseif ($mode === "BLOTTERED") {
+  $where .= " AND incident_phase = 'BLOTTERED' ";
+} else {
+  $where .= " AND (
+                (verification_status = 'VERIFIED' AND (blotter_entry_number IS NULL OR blotter_entry_number = ''))
+                OR incident_phase = 'BLOTTERED'
+              ) ";
+}
 
 if ($q !== "") {
   $where .= "
@@ -20,10 +29,12 @@ if ($q !== "") {
       OR incident_type LIKE ?
       OR barangay LIKE ?
       OR city_municipality LIKE ?
+      OR blotter_entry_number LIKE ?
+      OR irf_entry_number LIKE ?
     )
   ";
   $like = "%{$q}%";
-  $params = [$like, $like, $like, $like, $like];
+  $params = [$like, $like, $like, $like, $like, $like, $like];
 }
 
 $sql = "
@@ -36,12 +47,16 @@ $sql = "
     city_municipality,
     verification_status,
     incident_phase,
+    blotter_entry_number,
+    irf_entry_number,
     date_reported,
     created_at
   FROM incident_reports
   $where
-  ORDER BY created_at DESC
-  LIMIT 100
+  ORDER BY
+    CASE WHEN incident_phase = 'BLOTTERED' THEN 0 ELSE 1 END,
+    created_at DESC
+  LIMIT 200
 ";
 
 $stmt = $pdo->prepare($sql);
@@ -60,6 +75,8 @@ echo json_encode([
       "city_municipality" => $r["city_municipality"],
       "verification_status" => $r["verification_status"],
       "incident_phase" => $r["incident_phase"],
+      "blotter_entry_number" => $r["blotter_entry_number"],
+      "irf_entry_number" => $r["irf_entry_number"],
       "date_reported" => $r["date_reported"],
       "created_at" => $r["created_at"]
     ];
