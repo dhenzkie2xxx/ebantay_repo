@@ -14,6 +14,7 @@ $stmt = $pdo->prepare("
   SELECT
     id,
     incident_code,
+    crime_type_id,
     title,
     incident_type,
     crime_category,
@@ -21,6 +22,8 @@ $stmt = $pdo->prepare("
     verification_status,
     incident_phase,
     case_status,
+    report_source,
+    report_channel,
     blotter_entry_number,
     irf_entry_number,
     has_known_suspect,
@@ -38,6 +41,9 @@ $stmt = $pdo->prepare("
     province,
     region,
     location_type,
+    lat,
+    lng,
+    accuracy_m,
     admin_notes,
     date_reported,
     created_at
@@ -86,6 +92,7 @@ echo json_encode([
   "incident" => [
     "id" => (int)$row["id"],
     "incident_code" => $row["incident_code"],
+    "crime_type_id" => $row["crime_type_id"] !== null ? (int)$row["crime_type_id"] : "",
     "title" => $row["title"],
     "incident_type" => $row["incident_type"],
     "crime_category" => $row["crime_category"],
@@ -93,6 +100,8 @@ echo json_encode([
     "verification_status" => $row["verification_status"],
     "incident_phase" => $row["incident_phase"],
     "case_status" => $row["case_status"],
+    "report_source" => $row["report_source"],
+    "report_channel" => $row["report_channel"],
     "blotter_entry_number" => $row["blotter_entry_number"],
     "irf_entry_number" => $row["irf_entry_number"],
     "has_known_suspect" => (int)$row["has_known_suspect"],
@@ -110,6 +119,9 @@ echo json_encode([
     "province" => $row["province"],
     "region" => $row["region"],
     "location_type" => $row["location_type"],
+    "lat" => $row["lat"] !== null ? (float)$row["lat"] : "",
+    "lng" => $row["lng"] !== null ? (float)$row["lng"] : "",
+    "accuracy_m" => $row["accuracy_m"] !== null ? (int)$row["accuracy_m"] : "",
     "admin_notes" => $row["admin_notes"],
     "date_reported" => $row["date_reported"],
     "created_at" => $row["created_at"]

@@ -1,12 +1,19 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/hotspot_lib.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
 $data = json_decode(file_get_contents("php://input"), true);
 
 $incidentId = (int)($data["incident_id"] ?? 0);
-$blotterEntryNumber = trim((string)($data["blotter_entry_number"] ?? ""));
+$title = trim((string)($data["title"] ?? ""));
+$crimeTypeId = (int)($data["crime_type_id"] ?? 0);
+$narrative = trim((string)($data["narrative"] ?? ""));
+
+$incomingReportSource = strtolower(trim((string)($data["report_source"] ?? "")));
+$incomingReportChannel = strtolower(trim((string)($data["report_channel"] ?? "")));
+
 $irfEntryNumber = trim((string)($data["irf_entry_number"] ?? ""));
 $notes = trim((string)($data["admin_notes"] ?? ""));
 
@@ -28,11 +35,16 @@ $region = trim((string)($data["region"] ?? ""));
 $locationType = trim((string)($data["location_type"] ?? ""));
 $caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
 
+$lat = isset($data["lat"]) && $data["lat"] !== "" ? (float)$data["lat"] : null;
+$lng = isset($data["lng"]) && $data["lng"] !== "" ? (float)$data["lng"] : null;
+
 $persons = $data["persons"] ?? [];
 $properties = $data["properties"] ?? [];
 $officers = $data["officers"] ?? [];
 
 $allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+$allowedSources = ["walk_in", "hotline", "police_encoder", "other"];
+$allowedChannels = ["station", "phone", "radio", "other"];
 $allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
 $allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
 $allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
@@ -42,9 +54,21 @@ if (!in_array($caseStatus, $allowedCase, true)) {
   $caseStatus = "OPEN";
 }
 
-if ($incidentId <= 0 || $blotterEntryNumber === "") {
+if ($incidentId <= 0) {
+  http_response_code(400);
+  echo json_encode(["ok" => false, "message" => "Missing incident_id"]);
+  exit;
+}
+
+if ($title === "" || $crimeTypeId <= 0 || $narrative === "" || $barangay === "" || $cityMunicipality === "" || $province === "") {
   http_response_code(400);
   echo json_encode(["ok" => false, "message" => "Missing required fields"]);
+  exit;
+}
+
+if ($lat === null || $lng === null) {
+  http_response_code(400);
+  echo json_encode(["ok" => false, "message" => "Pin the incident location on the map"]);
   exit;
 }
 
@@ -67,11 +91,33 @@ $locationType = $locationType !== "" ? $locationType : null;
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
 
+function generate_blotter_number(PDO $pdo): string {
+  $year = gmdate("Y");
+
+  $stmt = $pdo->prepare("
+    SELECT MAX(CAST(SUBSTRING_INDEX(blotter_entry_number, '-', -1) AS UNSIGNED)) AS max_seq
+    FROM incident_reports
+    WHERE blotter_entry_number LIKE ?
+    FOR UPDATE
+  ");
+  $stmt->execute(["BLT-{$year}-%"]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  $next = (int)($row["max_seq"] ?? 0) + 1;
+  return sprintf("BLT-%s-%06d", $year, $next);
+}
+
 try {
   $pdo->beginTransaction();
 
   $sel = $pdo->prepare("
-    SELECT incident_phase, case_status, verification_status
+    SELECT
+      incident_phase,
+      case_status,
+      verification_status,
+      report_source,
+      report_channel,
+      blotter_entry_number
     FROM incident_reports
     WHERE id = ?
     LIMIT 1
@@ -83,11 +129,49 @@ try {
     throw new Exception("Incident not found");
   }
 
+  $crimeStmt = $pdo->prepare("
+    SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
+    FROM crime_types
+    WHERE id = ? AND is_active = 1
+    LIMIT 1
+  ");
+  $crimeStmt->execute([$crimeTypeId]);
+  $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$crime) {
+    throw new Exception("Invalid incident type");
+  }
+
+  $isMobileOrigin = strtolower((string)$old["report_source"]) === "mobile_app";
+  if ($isMobileOrigin) {
+    $reportSource = "mobile_app";
+    $reportChannel = "mobile";
+  } else {
+    $reportSource = in_array($incomingReportSource, $allowedSources, true) ? $incomingReportSource : "walk_in";
+    $reportChannel = in_array($incomingReportChannel, $allowedChannels, true) ? $incomingReportChannel : "station";
+  }
+
+  $blotterEntryNumber = trim((string)($old["blotter_entry_number"] ?? ""));
+  if ($blotterEntryNumber === "") {
+    $blotterEntryNumber = generate_blotter_number($pdo);
+  }
+
   $upd = $pdo->prepare("
     UPDATE incident_reports
     SET
       blotter_entry_number = ?,
       irf_entry_number = ?,
+      report_source = ?,
+      report_channel = ?,
+      crime_type_id = ?,
+      incident_type = ?,
+      crime_category = ?,
+      focus_crime_code = ?,
+      ciras_offense_code = ?,
+      title = ?,
+      narrative = ?,
+      lat = ?,
+      lng = ?,
       incident_phase = 'BLOTTERED',
       case_status = ?,
       reviewed_by = ?,
@@ -113,6 +197,17 @@ try {
   $upd->execute([
     $blotterEntryNumber,
     $irfEntryNumber,
+    $reportSource,
+    $reportChannel,
+    (int)$crime["id"],
+    $crime["crime_name"],
+    $crime["crime_category"],
+    $crime["focus_crime_code"],
+    $crime["ciras_offense_code"],
+    $title,
+    $narrative,
+    $lat,
+    $lng,
     $caseStatus,
     $adminId,
     $hasKnownSuspect,
@@ -297,11 +392,20 @@ try {
     $adminId
   ]);
 
+  recalc_hotspots_after_incident_save($pdo, $incidentId);
+
+  $alertResult = ["created" => 0, "targets" => []];
+  if (strtoupper((string)$old["incident_phase"]) !== "BLOTTERED") {
+    $alertResult = queue_incident_hotspot_alerts($pdo, $incidentId);
+  }
+
   $pdo->commit();
 
   echo json_encode([
     "ok" => true,
-    "message" => "Blotter filed successfully"
+    "message" => "Blotter filed successfully",
+    "blotter_entry_number" => $blotterEntryNumber,
+    "alert_created_count" => $alertResult["created"] ?? 0
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();

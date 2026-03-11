@@ -153,10 +153,6 @@ function find_nearest_hotspot(array $hotspots, float $lat, float $lng): ?array {
   return $nearest;
 }
 
-/**
- * -------- Persistent hotspot upsert helpers --------
- */
-
 function hotspot_config(): array {
   return [
     "radius_m" => 250,
@@ -464,8 +460,6 @@ function hotspot_refresh_incident_link(PDO $pdo, int $incidentId): void {
   }
 
   $ctx = hotspot_detect_context($pdo, $lat, $lng, $incidentId);
-
-  // include this incident itself in the verified context
   $ctx["incident_count"] = (int)$ctx["incident_count"] + 1;
 
   if (!hotspot_should_exist($ctx)) {
@@ -634,4 +628,71 @@ function create_hotspot_broadcast_alerts(
     "created" => $created,
     "targets" => $targets
   ];
+}
+
+function recalc_hotspots_after_incident_save(PDO $pdo, int $incidentId): void {
+  $stmt = $pdo->prepare("
+    SELECT lat, lng
+    FROM incident_reports
+    WHERE id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$incidentId]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$row || $row["lat"] === null || $row["lng"] === null) {
+    return;
+  }
+
+  $lat = (float)$row["lat"];
+  $lng = (float)$row["lng"];
+
+  hotspot_refresh_incident_link($pdo, $incidentId);
+  hotspot_refresh_nearby_links($pdo, $lat, $lng, 500);
+  hotspot_deactivate_orphan_hotspots($pdo);
+}
+
+function queue_incident_hotspot_alerts(PDO $pdo, int $incidentId): array {
+  $stmt = $pdo->prepare("
+    SELECT
+      r.id,
+      r.title,
+      r.incident_type,
+      r.barangay,
+      r.city_municipality,
+      r.hotspot_id,
+      h.risk_level
+    FROM incident_reports r
+    LEFT JOIN crime_hotspots h ON h.id = r.hotspot_id
+    WHERE r.id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$incidentId]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$row || empty($row["hotspot_id"])) {
+    return [
+      "created" => 0,
+      "targets" => []
+    ];
+  }
+
+  $incidentLabel = trim((string)($row["incident_type"] ?: $row["title"] ?: "incident"));
+  $place = trim((string)($row["barangay"] ?: $row["city_municipality"] ?: "your area"));
+  $severity = strtoupper(trim((string)($row["risk_level"] ?? "HIGH")));
+  if (!in_array($severity, ["LOW", "MEDIUM", "HIGH"], true)) {
+    $severity = "HIGH";
+  }
+
+  $title = "Police Advisory";
+  $message = "A {$incidentLabel} incident was blottered near {$place}. Please stay alert and avoid the area if possible.";
+
+  return create_hotspot_broadcast_alerts(
+    $pdo,
+    (int)$row["hotspot_id"],
+    $incidentId,
+    $title,
+    $message,
+    $severity
+  );
 }
