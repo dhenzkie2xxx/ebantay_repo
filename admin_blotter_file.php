@@ -28,7 +28,16 @@ $region = trim((string)($data["region"] ?? ""));
 $locationType = trim((string)($data["location_type"] ?? ""));
 $caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
 
+$persons = $data["persons"] ?? [];
+$properties = $data["properties"] ?? [];
+$officers = $data["officers"] ?? [];
+
 $allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+$allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
+$allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
+$allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
+$allowedOfficerRoles = ["ADMINISTERING_OFFICER","DUTY_INVESTIGATOR","ASSISTING_OFFICER","DESK_OFFICER","ENCODER"];
+
 if (!in_array($caseStatus, $allowedCase, true)) {
   $caseStatus = "OPEN";
 }
@@ -124,6 +133,142 @@ try {
     $notes,
     $incidentId
   ]);
+
+  $pdo->prepare("DELETE FROM incident_persons WHERE incident_id = ?")->execute([$incidentId]);
+  $pdo->prepare("DELETE FROM incident_properties WHERE incident_id = ?")->execute([$incidentId]);
+  $pdo->prepare("DELETE FROM incident_officers WHERE incident_id = ?")->execute([$incidentId]);
+
+  $personIns = $pdo->prepare("
+    INSERT INTO incident_persons
+    (
+      incident_id,
+      person_role,
+      family_name,
+      first_name,
+      middle_name,
+      nickname,
+      sex_gender,
+      civil_status,
+      birth_date,
+      age,
+      mobile_phone,
+      email_address,
+      current_address,
+      current_sitio,
+      current_barangay,
+      current_city,
+      current_province,
+      occupation,
+      relation_to_victim,
+      suspect_status
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($persons as $p) {
+    $role = strtoupper(trim((string)($p["person_role"] ?? "")));
+    if (!in_array($role, $allowedPersonRoles, true)) continue;
+
+    $suspectStatus = strtoupper(trim((string)($p["suspect_status"] ?? "UNKNOWN")));
+    if (!in_array($suspectStatus, $allowedSuspectStatus, true)) {
+      $suspectStatus = "UNKNOWN";
+    }
+
+    $familyName = trim((string)($p["family_name"] ?? ""));
+    $firstName = trim((string)($p["first_name"] ?? ""));
+    if ($familyName === "" && $firstName === "") continue;
+
+    $personIns->execute([
+      $incidentId,
+      $role,
+      $familyName !== "" ? $familyName : null,
+      $firstName !== "" ? $firstName : null,
+      trim((string)($p["middle_name"] ?? "")) ?: null,
+      trim((string)($p["nickname"] ?? "")) ?: null,
+      trim((string)($p["sex_gender"] ?? "")) ?: null,
+      trim((string)($p["civil_status"] ?? "")) ?: null,
+      trim((string)($p["birth_date"] ?? "")) ?: null,
+      ($p["age"] ?? "") !== "" ? (int)$p["age"] : null,
+      trim((string)($p["mobile_phone"] ?? "")) ?: null,
+      trim((string)($p["email_address"] ?? "")) ?: null,
+      trim((string)($p["current_address"] ?? "")) ?: null,
+      trim((string)($p["current_sitio"] ?? "")) ?: null,
+      trim((string)($p["current_barangay"] ?? "")) ?: null,
+      trim((string)($p["current_city"] ?? "")) ?: null,
+      trim((string)($p["current_province"] ?? "")) ?: null,
+      trim((string)($p["occupation"] ?? "")) ?: null,
+      trim((string)($p["relation_to_victim"] ?? "")) ?: null,
+      $suspectStatus
+    ]);
+  }
+
+  $propertyIns = $pdo->prepare("
+    INSERT INTO incident_properties
+    (
+      incident_id,
+      property_role,
+      property_type,
+      description,
+      quantity,
+      estimated_value,
+      recovered_flag,
+      serial_number,
+      plate_number
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($properties as $p) {
+    $role = strtoupper(trim((string)($p["property_role"] ?? "STOLEN")));
+    if (!in_array($role, $allowedPropertyRoles, true)) continue;
+
+    $propertyType = trim((string)($p["property_type"] ?? ""));
+    if ($propertyType === "") continue;
+
+    $propertyIns->execute([
+      $incidentId,
+      $role,
+      $propertyType,
+      trim((string)($p["description"] ?? "")) ?: null,
+      max(1, (int)($p["quantity"] ?? 1)),
+      ($p["estimated_value"] ?? "") !== "" ? (float)$p["estimated_value"] : null,
+      (int)($p["recovered_flag"] ?? 0) ? 1 : 0,
+      trim((string)($p["serial_number"] ?? "")) ?: null,
+      trim((string)($p["plate_number"] ?? "")) ?: null
+    ]);
+  }
+
+  $officerIns = $pdo->prepare("
+    INSERT INTO incident_officers
+    (
+      incident_id,
+      officer_role,
+      rank_title,
+      full_name,
+      designation,
+      police_station,
+      mobile_phone
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($officers as $o) {
+    $role = strtoupper(trim((string)($o["officer_role"] ?? "")));
+    if (!in_array($role, $allowedOfficerRoles, true)) continue;
+
+    $fullName = trim((string)($o["full_name"] ?? ""));
+    if ($fullName === "") continue;
+
+    $officerIns->execute([
+      $incidentId,
+      $role,
+      trim((string)($o["rank_title"] ?? "")) ?: null,
+      $fullName,
+      trim((string)($o["designation"] ?? "")) ?: null,
+      trim((string)($o["police_station"] ?? "")) ?: null,
+      trim((string)($o["mobile_phone"] ?? "")) ?: null
+    ]);
+  }
 
   $hist = $pdo->prepare("
     INSERT INTO incident_status_history

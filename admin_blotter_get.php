@@ -54,6 +54,33 @@ if (!$row) {
   exit;
 }
 
+$personsStmt = $pdo->prepare("
+  SELECT *
+  FROM incident_persons
+  WHERE incident_id = ?
+  ORDER BY id ASC
+");
+$personsStmt->execute([$id]);
+$persons = $personsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$propertiesStmt = $pdo->prepare("
+  SELECT *
+  FROM incident_properties
+  WHERE incident_id = ?
+  ORDER BY id ASC
+");
+$propertiesStmt->execute([$id]);
+$properties = $propertiesStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$officersStmt = $pdo->prepare("
+  SELECT *
+  FROM incident_officers
+  WHERE incident_id = ?
+  ORDER BY id ASC
+");
+$officersStmt->execute([$id]);
+$officers = $officersStmt->fetchAll(PDO::FETCH_ASSOC);
+
 echo json_encode([
   "ok" => true,
   "incident" => [
@@ -86,5 +113,53 @@ echo json_encode([
     "admin_notes" => $row["admin_notes"],
     "date_reported" => $row["date_reported"],
     "created_at" => $row["created_at"]
-  ]
+  ],
+  "persons" => array_map(function($r) {
+    return [
+      "id" => (int)$r["id"],
+      "person_role" => $r["person_role"],
+      "family_name" => $r["family_name"],
+      "first_name" => $r["first_name"],
+      "middle_name" => $r["middle_name"],
+      "nickname" => $r["nickname"],
+      "sex_gender" => $r["sex_gender"],
+      "civil_status" => $r["civil_status"],
+      "birth_date" => $r["birth_date"],
+      "age" => $r["age"] !== null ? (int)$r["age"] : "",
+      "mobile_phone" => $r["mobile_phone"],
+      "email_address" => $r["email_address"],
+      "current_address" => $r["current_address"],
+      "current_sitio" => $r["current_sitio"],
+      "current_barangay" => $r["current_barangay"],
+      "current_city" => $r["current_city"],
+      "current_province" => $r["current_province"],
+      "occupation" => $r["occupation"],
+      "relation_to_victim" => $r["relation_to_victim"],
+      "suspect_status" => $r["suspect_status"]
+    ];
+  }, $persons),
+  "properties" => array_map(function($r) {
+    return [
+      "id" => (int)$r["id"],
+      "property_role" => $r["property_role"],
+      "property_type" => $r["property_type"],
+      "description" => $r["description"],
+      "quantity" => (int)$r["quantity"],
+      "estimated_value" => $r["estimated_value"] !== null ? (float)$r["estimated_value"] : "",
+      "recovered_flag" => (int)$r["recovered_flag"],
+      "serial_number" => $r["serial_number"],
+      "plate_number" => $r["plate_number"]
+    ];
+  }, $properties),
+  "officers" => array_map(function($r) {
+    return [
+      "id" => (int)$r["id"],
+      "officer_role" => $r["officer_role"],
+      "rank_title" => $r["rank_title"],
+      "full_name" => $r["full_name"],
+      "designation" => $r["designation"],
+      "police_station" => $r["police_station"],
+      "mobile_phone" => $r["mobile_phone"]
+    ];
+  }, $officers)
 ]);
