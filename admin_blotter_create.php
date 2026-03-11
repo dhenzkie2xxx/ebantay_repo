@@ -1,0 +1,345 @@
+<?php
+require_once __DIR__ . "/require_admin.php";
+
+header("Content-Type: application/json; charset=UTF-8");
+
+$data = json_decode(file_get_contents("php://input"), true);
+
+$title = trim((string)($data["title"] ?? ""));
+$incidentType = trim((string)($data["incident_type"] ?? ""));
+$crimeCategory = strtoupper(trim((string)($data["crime_category"] ?? "OTHER")));
+$narrative = trim((string)($data["narrative"] ?? ""));
+
+$blotterEntryNumber = trim((string)($data["blotter_entry_number"] ?? ""));
+$irfEntryNumber = trim((string)($data["irf_entry_number"] ?? ""));
+$notes = trim((string)($data["admin_notes"] ?? ""));
+
+$hasKnownSuspect = (int)($data["has_known_suspect"] ?? 0) ? 1 : 0;
+$suspectCount = max(0, (int)($data["suspect_count"] ?? 0));
+$victimCount = max(0, (int)($data["victim_count"] ?? 0));
+$witnessCount = max(0, (int)($data["witness_count"] ?? 0));
+$propertyLossFlag = (int)($data["property_loss_flag"] ?? 0) ? 1 : 0;
+$estimatedDamageValue = $data["estimated_damage_value"] ?? null;
+
+$dateIncidentFrom = trim((string)($data["date_incident_from"] ?? ""));
+$dateIncidentTo = trim((string)($data["date_incident_to"] ?? ""));
+$placeOfIncident = trim((string)($data["place_of_incident"] ?? ""));
+$sitio = trim((string)($data["sitio"] ?? ""));
+$barangay = trim((string)($data["barangay"] ?? ""));
+$cityMunicipality = trim((string)($data["city_municipality"] ?? ""));
+$province = trim((string)($data["province"] ?? ""));
+$region = trim((string)($data["region"] ?? ""));
+$locationType = trim((string)($data["location_type"] ?? ""));
+$caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
+
+$lat = isset($data["lat"]) && $data["lat"] !== "" ? (float)$data["lat"] : null;
+$lng = isset($data["lng"]) && $data["lng"] !== "" ? (float)$data["lng"] : null;
+$accuracyM = isset($data["accuracy_m"]) && $data["accuracy_m"] !== "" ? (int)$data["accuracy_m"] : null;
+
+$persons = $data["persons"] ?? [];
+$properties = $data["properties"] ?? [];
+$officers = $data["officers"] ?? [];
+
+$allowedCrimeCategory = ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"];
+$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+$allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
+$allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
+$allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
+$allowedOfficerRoles = ["ADMINISTERING_OFFICER","DUTY_INVESTIGATOR","ASSISTING_OFFICER","DESK_OFFICER","ENCODER"];
+
+if (!in_array($crimeCategory, $allowedCrimeCategory, true)) $crimeCategory = "OTHER";
+if (!in_array($caseStatus, $allowedCase, true)) $caseStatus = "OPEN";
+
+if ($title === "" || $incidentType === "" || $narrative === "" || $barangay === "" || $cityMunicipality === "" || $province === "" || $blotterEntryNumber === "") {
+  http_response_code(400);
+  echo json_encode(["ok" => false, "message" => "Missing required fields"]);
+  exit;
+}
+
+if ($estimatedDamageValue === "" || $estimatedDamageValue === null) {
+  $estimatedDamageValue = null;
+} else {
+  $estimatedDamageValue = (float)$estimatedDamageValue;
+}
+
+$dateIncidentFrom = $dateIncidentFrom !== "" ? $dateIncidentFrom : null;
+$dateIncidentTo = $dateIncidentTo !== "" ? $dateIncidentTo : null;
+$irfEntryNumber = $irfEntryNumber !== "" ? $irfEntryNumber : null;
+$placeOfIncident = $placeOfIncident !== "" ? $placeOfIncident : null;
+$sitio = $sitio !== "" ? $sitio : null;
+$region = $region !== "" ? $region : null;
+$locationType = $locationType !== "" ? $locationType : null;
+
+$adminId = (int)($AUTH_USER["id"] ?? 0);
+
+function generate_incident_code(): string {
+  return "INC-" . gmdate("Ymd-His") . "-" . substr(strtoupper(bin2hex(random_bytes(3))), 0, 6);
+}
+
+try {
+  $pdo->beginTransaction();
+
+  $incidentCode = generate_incident_code();
+
+  $stmt = $pdo->prepare("
+    INSERT INTO incident_reports
+    (
+      incident_code,
+      blotter_entry_number,
+      irf_entry_number,
+      reporter_user_id,
+      report_source,
+      report_channel,
+      incident_type,
+      crime_category,
+      title,
+      narrative,
+      date_reported,
+      date_incident_from,
+      date_incident_to,
+      place_of_incident,
+      sitio,
+      barangay,
+      city_municipality,
+      province,
+      region,
+      lat,
+      lng,
+      accuracy_m,
+      location_type,
+      risk_status,
+      risk_radius_m,
+      incident_phase,
+      verification_status,
+      case_status,
+      has_known_suspect,
+      suspect_count,
+      victim_count,
+      witness_count,
+      property_loss_flag,
+      estimated_damage_value,
+      reviewed_by,
+      reviewed_at,
+      admin_notes
+    )
+    VALUES
+    (
+      ?, ?, ?, NULL,
+      'walk_in',
+      'station',
+      ?, ?, ?, ?,
+      UTC_TIMESTAMP(),
+      ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      'SAFE',
+      250,
+      'BLOTTERED',
+      'VERIFIED',
+      ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, UTC_TIMESTAMP(), ?
+    )
+  ");
+
+  $stmt->execute([
+    $incidentCode,
+    $blotterEntryNumber,
+    $irfEntryNumber,
+    $incidentType,
+    $crimeCategory,
+    $title,
+    $narrative,
+    $dateIncidentFrom,
+    $dateIncidentTo,
+    $placeOfIncident,
+    $sitio,
+    $barangay,
+    $cityMunicipality,
+    $province,
+    $region,
+    $lat,
+    $lng,
+    $accuracyM,
+    $locationType,
+    $caseStatus,
+    $hasKnownSuspect,
+    $suspectCount,
+    $victimCount,
+    $witnessCount,
+    $propertyLossFlag,
+    $estimatedDamageValue,
+    $adminId,
+    $notes
+  ]);
+
+  $incidentId = (int)$pdo->lastInsertId();
+
+  $personIns = $pdo->prepare("
+    INSERT INTO incident_persons
+    (
+      incident_id,
+      person_role,
+      family_name,
+      first_name,
+      middle_name,
+      nickname,
+      sex_gender,
+      civil_status,
+      birth_date,
+      age,
+      mobile_phone,
+      email_address,
+      current_address,
+      current_sitio,
+      current_barangay,
+      current_city,
+      current_province,
+      occupation,
+      relation_to_victim,
+      suspect_status
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($persons as $p) {
+    $role = strtoupper(trim((string)($p["person_role"] ?? "")));
+    if (!in_array($role, $allowedPersonRoles, true)) continue;
+
+    $suspectStatus = strtoupper(trim((string)($p["suspect_status"] ?? "UNKNOWN")));
+    if (!in_array($suspectStatus, $allowedSuspectStatus, true)) $suspectStatus = "UNKNOWN";
+
+    $familyName = trim((string)($p["family_name"] ?? ""));
+    $firstName = trim((string)($p["first_name"] ?? ""));
+    if ($familyName === "" && $firstName === "") continue;
+
+    $personIns->execute([
+      $incidentId,
+      $role,
+      $familyName !== "" ? $familyName : null,
+      $firstName !== "" ? $firstName : null,
+      trim((string)($p["middle_name"] ?? "")) ?: null,
+      trim((string)($p["nickname"] ?? "")) ?: null,
+      trim((string)($p["sex_gender"] ?? "")) ?: null,
+      trim((string)($p["civil_status"] ?? "")) ?: null,
+      trim((string)($p["birth_date"] ?? "")) ?: null,
+      ($p["age"] ?? "") !== "" ? (int)$p["age"] : null,
+      trim((string)($p["mobile_phone"] ?? "")) ?: null,
+      trim((string)($p["email_address"] ?? "")) ?: null,
+      trim((string)($p["current_address"] ?? "")) ?: null,
+      trim((string)($p["current_sitio"] ?? "")) ?: null,
+      trim((string)($p["current_barangay"] ?? "")) ?: null,
+      trim((string)($p["current_city"] ?? "")) ?: null,
+      trim((string)($p["current_province"] ?? "")) ?: null,
+      trim((string)($p["occupation"] ?? "")) ?: null,
+      trim((string)($p["relation_to_victim"] ?? "")) ?: null,
+      $suspectStatus
+    ]);
+  }
+
+  $propertyIns = $pdo->prepare("
+    INSERT INTO incident_properties
+    (
+      incident_id,
+      property_role,
+      property_type,
+      description,
+      quantity,
+      estimated_value,
+      recovered_flag,
+      serial_number,
+      plate_number
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($properties as $p) {
+    $role = strtoupper(trim((string)($p["property_role"] ?? "STOLEN")));
+    if (!in_array($role, $allowedPropertyRoles, true)) continue;
+
+    $propertyType = trim((string)($p["property_type"] ?? ""));
+    if ($propertyType === "") continue;
+
+    $propertyIns->execute([
+      $incidentId,
+      $role,
+      $propertyType,
+      trim((string)($p["description"] ?? "")) ?: null,
+      max(1, (int)($p["quantity"] ?? 1)),
+      ($p["estimated_value"] ?? "") !== "" ? (float)$p["estimated_value"] : null,
+      (int)($p["recovered_flag"] ?? 0) ? 1 : 0,
+      trim((string)($p["serial_number"] ?? "")) ?: null,
+      trim((string)($p["plate_number"] ?? "")) ?: null
+    ]);
+  }
+
+  $officerIns = $pdo->prepare("
+    INSERT INTO incident_officers
+    (
+      incident_id,
+      officer_role,
+      rank_title,
+      full_name,
+      designation,
+      police_station,
+      mobile_phone
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  ");
+
+  foreach ($officers as $o) {
+    $role = strtoupper(trim((string)($o["officer_role"] ?? "")));
+    if (!in_array($role, $allowedOfficerRoles, true)) continue;
+
+    $fullName = trim((string)($o["full_name"] ?? ""));
+    if ($fullName === "") continue;
+
+    $officerIns->execute([
+      $incidentId,
+      $role,
+      trim((string)($o["rank_title"] ?? "")) ?: null,
+      $fullName,
+      trim((string)($o["designation"] ?? "")) ?: null,
+      trim((string)($o["police_station"] ?? "")) ?: null,
+      trim((string)($o["mobile_phone"] ?? "")) ?: null
+    ]);
+  }
+
+  $hist = $pdo->prepare("
+    INSERT INTO incident_status_history
+    (
+      incident_id,
+      old_phase,
+      new_phase,
+      old_case_status,
+      new_case_status,
+      old_verification_status,
+      new_verification_status,
+      remarks,
+      changed_by
+    )
+    VALUES (?, NULL, 'BLOTTERED', NULL, ?, NULL, 'VERIFIED', ?, ?)
+  ");
+  $hist->execute([
+    $incidentId,
+    $caseStatus,
+    "Walk-in blotter created. " . $notes,
+    $adminId
+  ]);
+
+  $pdo->commit();
+
+  echo json_encode([
+    "ok" => true,
+    "message" => "Walk-in blotter created successfully",
+    "incident_id" => $incidentId,
+    "incident_code" => $incidentCode
+  ]);
+} catch (Throwable $e) {
+  if ($pdo->inTransaction()) $pdo->rollBack();
+  http_response_code(500);
+  echo json_encode([
+    "ok" => false,
+    "message" => "Server error",
+    "debug" => $e->getMessage()
+  ]);
+}
