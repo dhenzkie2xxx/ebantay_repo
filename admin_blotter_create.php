@@ -10,6 +10,9 @@ $incidentType = trim((string)($data["incident_type"] ?? ""));
 $crimeCategory = strtoupper(trim((string)($data["crime_category"] ?? "OTHER")));
 $narrative = trim((string)($data["narrative"] ?? ""));
 
+$reportSource = strtolower(trim((string)($data["report_source"] ?? "walk_in")));
+$reportChannel = strtolower(trim((string)($data["report_channel"] ?? "station")));
+
 $blotterEntryNumber = trim((string)($data["blotter_entry_number"] ?? ""));
 $irfEntryNumber = trim((string)($data["irf_entry_number"] ?? ""));
 $notes = trim((string)($data["admin_notes"] ?? ""));
@@ -42,6 +45,8 @@ $officers = $data["officers"] ?? [];
 
 $allowedCrimeCategory = ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"];
 $allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+$allowedSources = ["walk_in", "hotline", "police_encoder", "mobile_app", "other"];
+$allowedChannels = ["station", "phone", "radio", "mobile", "other"];
 $allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
 $allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
 $allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
@@ -49,6 +54,8 @@ $allowedOfficerRoles = ["ADMINISTERING_OFFICER","DUTY_INVESTIGATOR","ASSISTING_O
 
 if (!in_array($crimeCategory, $allowedCrimeCategory, true)) $crimeCategory = "OTHER";
 if (!in_array($caseStatus, $allowedCase, true)) $caseStatus = "OPEN";
+if (!in_array($reportSource, $allowedSources, true)) $reportSource = "walk_in";
+if (!in_array($reportChannel, $allowedChannels, true)) $reportChannel = "station";
 
 if ($title === "" || $incidentType === "" || $narrative === "" || $barangay === "" || $cityMunicipality === "" || $province === "" || $blotterEntryNumber === "") {
   http_response_code(400);
@@ -125,8 +132,7 @@ try {
     VALUES
     (
       ?, ?, ?, NULL,
-      'walk_in',
-      'station',
+      ?, ?,
       ?, ?, ?, ?,
       UTC_TIMESTAMP(),
       ?, ?, ?, ?, ?, ?, ?, ?,
@@ -145,6 +151,8 @@ try {
     $incidentCode,
     $blotterEntryNumber,
     $irfEntryNumber,
+    $reportSource,
+    $reportChannel,
     $incidentType,
     $crimeCategory,
     $title,
@@ -322,7 +330,7 @@ try {
   $hist->execute([
     $incidentId,
     $caseStatus,
-    "Walk-in blotter created. " . $notes,
+    "Station blotter created via {$reportSource}/{$reportChannel}. " . $notes,
     $adminId
   ]);
 
@@ -330,7 +338,7 @@ try {
 
   echo json_encode([
     "ok" => true,
-    "message" => "Walk-in blotter created successfully",
+    "message" => "Station blotter created successfully",
     "incident_id" => $incidentId,
     "incident_code" => $incidentCode
   ]);
