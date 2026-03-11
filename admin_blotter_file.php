@@ -10,11 +10,51 @@ $blotterEntryNumber = trim((string)($data["blotter_entry_number"] ?? ""));
 $irfEntryNumber = trim((string)($data["irf_entry_number"] ?? ""));
 $notes = trim((string)($data["admin_notes"] ?? ""));
 
+$hasKnownSuspect = (int)($data["has_known_suspect"] ?? 0) ? 1 : 0;
+$suspectCount = max(0, (int)($data["suspect_count"] ?? 0));
+$victimCount = max(0, (int)($data["victim_count"] ?? 0));
+$witnessCount = max(0, (int)($data["witness_count"] ?? 0));
+$propertyLossFlag = (int)($data["property_loss_flag"] ?? 0) ? 1 : 0;
+$estimatedDamageValue = $data["estimated_damage_value"] ?? null;
+
+$dateIncidentFrom = trim((string)($data["date_incident_from"] ?? ""));
+$dateIncidentTo = trim((string)($data["date_incident_to"] ?? ""));
+$placeOfIncident = trim((string)($data["place_of_incident"] ?? ""));
+$sitio = trim((string)($data["sitio"] ?? ""));
+$barangay = trim((string)($data["barangay"] ?? ""));
+$cityMunicipality = trim((string)($data["city_municipality"] ?? ""));
+$province = trim((string)($data["province"] ?? ""));
+$region = trim((string)($data["region"] ?? ""));
+$locationType = trim((string)($data["location_type"] ?? ""));
+$caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
+
+$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+if (!in_array($caseStatus, $allowedCase, true)) {
+  $caseStatus = "OPEN";
+}
+
 if ($incidentId <= 0 || $blotterEntryNumber === "") {
   http_response_code(400);
   echo json_encode(["ok" => false, "message" => "Missing required fields"]);
   exit;
 }
+
+if ($estimatedDamageValue === "" || $estimatedDamageValue === null) {
+  $estimatedDamageValue = null;
+} else {
+  $estimatedDamageValue = (float)$estimatedDamageValue;
+}
+
+$dateIncidentFrom = $dateIncidentFrom !== "" ? $dateIncidentFrom : null;
+$dateIncidentTo = $dateIncidentTo !== "" ? $dateIncidentTo : null;
+$irfEntryNumber = $irfEntryNumber !== "" ? $irfEntryNumber : null;
+$placeOfIncident = $placeOfIncident !== "" ? $placeOfIncident : null;
+$sitio = $sitio !== "" ? $sitio : null;
+$barangay = $barangay !== "" ? $barangay : null;
+$cityMunicipality = $cityMunicipality !== "" ? $cityMunicipality : null;
+$province = $province !== "" ? $province : null;
+$region = $region !== "" ? $region : null;
+$locationType = $locationType !== "" ? $locationType : null;
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
 
@@ -40,20 +80,47 @@ try {
       blotter_entry_number = ?,
       irf_entry_number = ?,
       incident_phase = 'BLOTTERED',
-      case_status = 'OPEN',
+      case_status = ?,
       reviewed_by = ?,
       reviewed_at = COALESCE(reviewed_at, UTC_TIMESTAMP()),
-      admin_notes = CASE
-        WHEN ? <> '' THEN ?
-        ELSE admin_notes
-      END
+      has_known_suspect = ?,
+      suspect_count = ?,
+      victim_count = ?,
+      witness_count = ?,
+      property_loss_flag = ?,
+      estimated_damage_value = ?,
+      date_incident_from = COALESCE(?, date_incident_from),
+      date_incident_to = ?,
+      place_of_incident = ?,
+      sitio = ?,
+      barangay = COALESCE(?, barangay),
+      city_municipality = COALESCE(?, city_municipality),
+      province = COALESCE(?, province),
+      region = ?,
+      location_type = ?,
+      admin_notes = ?
     WHERE id = ?
   ");
   $upd->execute([
     $blotterEntryNumber,
-    $irfEntryNumber !== "" ? $irfEntryNumber : null,
+    $irfEntryNumber,
+    $caseStatus,
     $adminId,
-    $notes,
+    $hasKnownSuspect,
+    $suspectCount,
+    $victimCount,
+    $witnessCount,
+    $propertyLossFlag,
+    $estimatedDamageValue,
+    $dateIncidentFrom,
+    $dateIncidentTo,
+    $placeOfIncident,
+    $sitio,
+    $barangay,
+    $cityMunicipality,
+    $province,
+    $region,
+    $locationType,
     $notes,
     $incidentId
   ]);
@@ -78,7 +145,7 @@ try {
     $old["incident_phase"],
     "BLOTTERED",
     $old["case_status"],
-    "OPEN",
+    $caseStatus,
     $old["verification_status"],
     $old["verification_status"],
     "Blotter filed. " . $notes,
