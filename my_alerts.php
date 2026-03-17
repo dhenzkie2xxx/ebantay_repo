@@ -27,34 +27,45 @@ function bearer_token(): string {
 }
 
 $token = bearer_token();
-if ($token === "") out(401, ["ok"=>false, "message"=>"Missing token"]);
+if ($token === "") out(401, ["ok" => false, "message" => "Missing token"]);
 
 $stmt = $pdo->prepare("
   SELECT id
   FROM users
   WHERE api_token = ?
     AND valid = 'valid'
+    AND (api_token_expires IS NULL OR api_token_expires > NOW())
   LIMIT 1
 ");
 $stmt->execute([$token]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$user) out(401, ["ok"=>false, "message"=>"Invalid token"]);
+if (!$user) out(401, ["ok" => false, "message" => "Invalid token"]);
 
 $userId = (int)$user["id"];
+
+$countStmt = $pdo->prepare("
+  SELECT COUNT(*) AS unread_count
+  FROM notification_alerts
+  WHERE user_id = ?
+    AND is_read = 0
+");
+$countStmt->execute([$userId]);
+$unreadCount = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["unread_count"] ?? 0);
 
 $list = $pdo->prepare("
   SELECT id, type, title, message, hotspot_id, incident_id, severity, is_read, created_at
   FROM notification_alerts
   WHERE user_id = ?
-  ORDER BY created_at DESC
-  LIMIT 20
+  ORDER BY created_at DESC, id DESC
+  LIMIT 50
 ");
 $list->execute([$userId]);
 $rows = $list->fetchAll(PDO::FETCH_ASSOC);
 
 echo json_encode([
   "ok" => true,
+  "unread_count" => $unreadCount,
   "alerts" => array_map(function($r) {
     return [
       "id" => (int)$r["id"],

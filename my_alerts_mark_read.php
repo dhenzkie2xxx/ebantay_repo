@@ -27,34 +27,54 @@ function bearer_token(): string {
 }
 
 $token = bearer_token();
-if ($token === "") out(401, ["ok"=>false, "message"=>"Missing token"]);
+if ($token === "") out(401, ["ok" => false, "message" => "Missing token"]);
 
 $stmt = $pdo->prepare("
   SELECT id
   FROM users
   WHERE api_token = ?
     AND valid = 'valid'
+    AND (api_token_expires IS NULL OR api_token_expires > NOW())
   LIMIT 1
 ");
 $stmt->execute([$token]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$user) out(401, ["ok"=>false, "message"=>"Invalid token"]);
+if (!$user) out(401, ["ok" => false, "message" => "Invalid token"]);
 
 $userId = (int)$user["id"];
 
 $data = json_decode(file_get_contents("php://input"), true);
-$id = (int)($data["id"] ?? 0);
 
-if ($id <= 0) {
-  out(400, ["ok"=>false, "message"=>"Missing id"]);
+$id = (int)($data["id"] ?? 0);
+$ids = $data["ids"] ?? [];
+
+if ($id > 0) {
+  $ids[] = $id;
 }
+
+if (!is_array($ids)) {
+  $ids = [];
+}
+
+$ids = array_values(array_unique(array_filter(array_map("intval", $ids), fn($v) => $v > 0)));
+
+if (!$ids) {
+  out(400, ["ok" => false, "message" => "Missing id"]);
+}
+
+$placeholders = implode(",", array_fill(0, count($ids), "?"));
+$params = array_merge($ids, [$userId]);
 
 $upd = $pdo->prepare("
   UPDATE notification_alerts
   SET is_read = 1
-  WHERE id = ? AND user_id = ?
+  WHERE id IN ($placeholders) AND user_id = ?
 ");
-$upd->execute([$id, $userId]);
+$upd->execute($params);
 
-out(200, ["ok"=>true, "message"=>"Marked as read"]);
+out(200, [
+  "ok" => true,
+  "message" => "Marked as read",
+  "updated" => $upd->rowCount()
+]);
