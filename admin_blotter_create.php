@@ -101,6 +101,22 @@ function generate_blotter_number(PDO $pdo): string {
   return sprintf("BLT-%s-%06d", $year, $next);
 }
 
+function generate_irf_number(PDO $pdo): string {
+  $year = gmdate("Y");
+
+  $stmt = $pdo->prepare("
+    SELECT MAX(CAST(SUBSTRING_INDEX(irf_entry_number, '-', -1) AS UNSIGNED)) AS max_seq
+    FROM incident_reports
+    WHERE irf_entry_number LIKE ?
+    FOR UPDATE
+  ");
+  $stmt->execute(["IRF-{$year}-%"]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  $next = (int)($row["max_seq"] ?? 0) + 1;
+  return sprintf("IRF-%s-%06d", $year, $next);
+}
+
 try {
   $pdo->beginTransaction();
 
@@ -119,6 +135,10 @@ try {
 
   $incidentCode = generate_incident_code();
   $blotterEntryNumber = generate_blotter_number($pdo);
+
+  if ($irfEntryNumber === null || trim((string)$irfEntryNumber) === "") {
+    $irfEntryNumber = generate_irf_number($pdo);
+  }
 
   $stmt = $pdo->prepare("
     INSERT INTO incident_reports
@@ -382,6 +402,7 @@ try {
     "incident_id" => $incidentId,
     "incident_code" => $incidentCode,
     "blotter_entry_number" => $blotterEntryNumber,
+    "irf_entry_number" => $irfEntryNumber,
     "alert_created_count" => $alertResult["created"] ?? 0
   ]);
 } catch (Throwable $e) {
