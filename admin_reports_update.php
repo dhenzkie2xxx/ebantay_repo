@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
-require_once __DIR__ . "/hotspot_lib.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -8,118 +7,134 @@ $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
 $id = (int)($data["id"] ?? 0);
-$verificationStatus = strtoupper(trim($data["verification_status"] ?? ""));
-$incidentPhase = strtoupper(trim($data["incident_phase"] ?? ""));
-$caseStatus = strtoupper(trim($data["case_status"] ?? ""));
+$status = strtoupper(trim($data["status"] ?? ""));
 $notes = trim($data["admin_notes"] ?? "");
 
-$allowedVerification = ["PENDING","VERIFIED","FALSE_REPORT","DUPLICATE"];
-$allowedPhase = ["REPORTED","UNDER_VERIFICATION","BLOTTERED","UNDER_INVESTIGATION","FILED_IN_COURT","RESOLVED","REJECTED"];
-$allowedCase = ["OPEN","CLEARED","SOLVED","CLOSED","UNFOUNDED"];
-
-if (
-  $id <= 0 ||
-  !in_array($verificationStatus, $allowedVerification, true) ||
-  !in_array($incidentPhase, $allowedPhase, true) ||
-  !in_array($caseStatus, $allowedCase, true)
-) {
+$allowed = ["PENDING", "REVIEWED", "RESOLVED", "REJECTED"];
+if ($id <= 0 || !in_array($status, $allowed, true)) {
   http_response_code(400);
-  echo json_encode(["ok"=>false,"message"=>"Invalid payload"]);
+  echo json_encode(["ok" => false, "message" => "Invalid payload"]);
   exit;
 }
 
-$adminId = (int)($AUTH_USER["id"] ?? 0);
 $now = gmdate("Y-m-d H:i:s");
+$adminId = (int)($AUTH_USER["id"] ?? 0);
 
-$oldStmt = $pdo->prepare("
-  SELECT id, lat, lng, verification_status, incident_phase, case_status
-  FROM incident_reports
-  WHERE id = ?
-  LIMIT 1
-");
-$oldStmt->execute([$id]);
-$old = $oldStmt->fetch(PDO::FETCH_ASSOC);
+$reviewedAt = null;
+$resolvedAt = null;
 
-if (!$old) {
-  http_response_code(404);
-  echo json_encode(["ok"=>false,"message"=>"Incident not found"]);
-  exit;
+if ($status === "REVIEWED") $reviewedAt = $now;
+if ($status === "RESOLVED") $resolvedAt = $now;
+
+function queue_user_notification(
+  PDO $pdo,
+  int $userId,
+  string $type,
+  string $title,
+  string $message,
+  ?int $hotspotId = null,
+  ?int $incidentId = null,
+  string $severity = "MEDIUM"
+): void {
+  $severity = strtoupper(trim($severity));
+  if (!in_array($severity, ["LOW", "MEDIUM", "HIGH"], true)) {
+    $severity = "MEDIUM";
+  }
+
+  $stmt = $pdo->prepare("
+    INSERT INTO notification_alerts
+    (
+      user_id,
+      type,
+      title,
+      message,
+      hotspot_id,
+      incident_id,
+      severity,
+      is_read,
+      created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP())
+  ");
+
+  $stmt->execute([
+    $userId,
+    $type,
+    $title,
+    $message,
+    $hotspotId,
+    $incidentId,
+    $severity
+  ]);
 }
-
-$reviewedAt = $old["verification_status"] === "PENDING" && $verificationStatus !== "PENDING"
-  ? $now
-  : null;
-
-$resolvedAt = ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED")
-  ? $now
-  : null;
 
 try {
   $pdo->beginTransaction();
 
+  $oldStmt = $pdo->prepare("
+    SELECT id, title, reporter_user_id, status
+    FROM incident_reports
+    WHERE id = ?
+    LIMIT 1
+  ");
+  $oldStmt->execute([$id]);
+  $old = $oldStmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$old) {
+    $pdo->rollBack();
+    http_response_code(404);
+    echo json_encode(["ok" => false, "message" => "Incident not found"]);
+    exit;
+  }
+
   $stmt = $pdo->prepare("
     UPDATE incident_reports
-    SET verification_status = :verification_status,
-        incident_phase = :incident_phase,
-        case_status = :case_status,
-        admin_notes = :admin_notes,
-        reviewed_by = :reviewed_by,
-        reviewed_at = COALESCE(reviewed_at, :reviewed_at),
-        resolved_at = CASE
-          WHEN :resolved_at IS NOT NULL THEN :resolved_at
-          ELSE resolved_at
-        END
+    SET status = :status,
+        admin_notes = :notes,
+        reviewed_by = CASE WHEN :setReviewed = 1 THEN :adminId ELSE reviewed_by END,
+        reviewed_at = CASE WHEN :setReviewed = 1 THEN :reviewedAt ELSE reviewed_at END,
+        resolved_at = CASE WHEN :setResolved = 1 THEN :resolvedAt ELSE resolved_at END
     WHERE id = :id
   ");
-
   $stmt->execute([
-    ":verification_status" => $verificationStatus,
-    ":incident_phase" => $incidentPhase,
-    ":case_status" => $caseStatus,
-    ":admin_notes" => $notes,
-    ":reviewed_by" => $adminId,
-    ":reviewed_at" => $reviewedAt,
-    ":resolved_at" => $resolvedAt,
+    ":status" => $status,
+    ":notes" => $notes,
+    ":setReviewed" => ($status === "REVIEWED") ? 1 : 0,
+    ":setResolved" => ($status === "RESOLVED") ? 1 : 0,
+    ":adminId" => $adminId,
+    ":reviewedAt" => $reviewedAt,
+    ":resolvedAt" => $resolvedAt,
     ":id" => $id
   ]);
 
-  $hist = $pdo->prepare("
-    INSERT INTO incident_status_history
-    (
-      incident_id,
-      old_phase,
-      new_phase,
-      old_case_status,
-      new_case_status,
-      old_verification_status,
-      new_verification_status,
-      remarks,
-      changed_by
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ");
-  $hist->execute([
-    $id,
-    $old["incident_phase"],
-    $incidentPhase,
-    $old["case_status"],
-    $caseStatus,
-    $old["verification_status"],
-    $verificationStatus,
-    $notes,
-    $adminId
-  ]);
+  $oldStatus = strtoupper((string)($old["status"] ?? ""));
+  $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
 
-  // Refresh hotspot link for the current incident
-  hotspot_refresh_incident_link($pdo, $id);
+  if ($reporterUserId > 0 && $oldStatus !== $status) {
+    $title = "Incident Report Update";
+    $incidentTitle = trim((string)($old["title"] ?? ""));
+    if ($incidentTitle === "") $incidentTitle = "Untitled Incident";
 
-  // Refresh nearby incidents too, so cluster linkage stays consistent
-  if ($old["lat"] !== null && $old["lng"] !== null) {
-    hotspot_refresh_nearby_links($pdo, (float)$old["lat"], (float)$old["lng"], 500);
+    $message = "Your reported incident \"" . $incidentTitle . "\" is now marked as {$status}.";
+    if ($notes !== "") {
+      $message .= " Admin note: " . $notes;
+    }
+
+    $severity = "MEDIUM";
+    if ($status === "RESOLVED") $severity = "LOW";
+    if ($status === "REJECTED") $severity = "HIGH";
+
+    queue_user_notification(
+      $pdo,
+      $reporterUserId,
+      "INCIDENT_STATUS",
+      $title,
+      $message,
+      null,
+      (int)$old["id"],
+      $severity
+    );
   }
-
-  // Disable hotspots that no longer have any verified linked incidents
-  hotspot_deactivate_orphan_hotspots($pdo);
 
   $pdo->commit();
 
