@@ -38,18 +38,78 @@ if (!$ids) {
 $adminId = (int)($AUTH_USER["id"] ?? 0);
 $now = gmdate("Y-m-d H:i:s");
 
+function queue_user_notification(
+  PDO $pdo,
+  int $userId,
+  string $type,
+  string $title,
+  string $message,
+  ?int $hotspotId = null,
+  ?int $incidentId = null,
+  string $severity = "MEDIUM"
+): void {
+  $severity = strtoupper(trim($severity));
+  if (!in_array($severity, ["LOW", "MEDIUM", "HIGH"], true)) {
+    $severity = "MEDIUM";
+  }
+
+  $stmt = $pdo->prepare("
+    INSERT INTO notification_alerts
+    (
+      user_id,
+      type,
+      title,
+      message,
+      hotspot_id,
+      incident_id,
+      severity,
+      is_read,
+      created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP())
+  ");
+
+  $stmt->execute([
+    $userId,
+    $type,
+    $title,
+    $message,
+    $hotspotId,
+    $incidentId,
+    $severity
+  ]);
+}
+
 try {
   $pdo->beginTransaction();
 
   $ph = implode(",", array_fill(0, count($ids), "?"));
 
   $sel = $pdo->prepare("
-    SELECT id, lat, lng, verification_status, incident_phase, case_status
+    SELECT
+      id,
+      title,
+      reporter_user_id,
+      lat,
+      lng,
+      verification_status,
+      incident_phase,
+      case_status
     FROM incident_reports
     WHERE id IN ($ph)
   ");
   $sel->execute($ids);
   $oldRows = $sel->fetchAll(PDO::FETCH_ASSOC);
+
+  if (!$oldRows) {
+    $pdo->rollBack();
+    http_response_code(404);
+    echo json_encode([
+      "ok" => false,
+      "message" => "No incidents found"
+    ]);
+    exit;
+  }
 
   $upd = $pdo->prepare("
     UPDATE incident_reports
@@ -108,6 +168,39 @@ try {
       $notes,
       $adminId
     ]);
+
+    $reporterUserId = (int)($row["reporter_user_id"] ?? 0);
+
+    $changed =
+      strtoupper((string)$row["verification_status"]) !== $verificationStatus ||
+      strtoupper((string)$row["incident_phase"]) !== $incidentPhase ||
+      strtoupper((string)$row["case_status"]) !== $caseStatus;
+
+    if ($reporterUserId > 0 && $changed) {
+      $incidentTitle = trim((string)($row["title"] ?? ""));
+      if ($incidentTitle === "") $incidentTitle = "Untitled Incident";
+
+      $title = "Incident Report Update";
+      $message = "Your reported incident \"{$incidentTitle}\" was updated. Verification: {$verificationStatus}, Phase: {$incidentPhase}, Case: {$caseStatus}.";
+      if ($notes !== "") {
+        $message .= " Admin note: {$notes}";
+      }
+
+      $severity = "MEDIUM";
+      if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") $severity = "LOW";
+      if ($verificationStatus === "FALSE_REPORT" || $incidentPhase === "REJECTED") $severity = "HIGH";
+
+      queue_user_notification(
+        $pdo,
+        $reporterUserId,
+        "INCIDENT_STATUS",
+        $title,
+        $message,
+        null,
+        (int)$row["id"],
+        $severity
+      );
+    }
   }
 
   foreach ($oldRows as $row) {

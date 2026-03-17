@@ -7,24 +7,39 @@ $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
 $id = (int)($data["id"] ?? 0);
-$status = strtoupper(trim($data["status"] ?? ""));
-$notes = trim($data["admin_notes"] ?? "");
+$verificationStatus = strtoupper(trim((string)($data["verification_status"] ?? "")));
+$incidentPhase = strtoupper(trim((string)($data["incident_phase"] ?? "")));
+$caseStatus = strtoupper(trim((string)($data["case_status"] ?? "")));
+$notes = trim((string)($data["admin_notes"] ?? ""));
 
-$allowed = ["PENDING", "REVIEWED", "RESOLVED", "REJECTED"];
-if ($id <= 0 || !in_array($status, $allowed, true)) {
+$allowedVerification = ["PENDING", "VERIFIED", "FALSE_REPORT", "DUPLICATE"];
+$allowedPhase = [
+  "REPORTED",
+  "UNDER_VERIFICATION",
+  "BLOTTERED",
+  "UNDER_INVESTIGATION",
+  "FILED_IN_COURT",
+  "RESOLVED",
+  "REJECTED"
+];
+$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+
+if (
+  $id <= 0 ||
+  !in_array($verificationStatus, $allowedVerification, true) ||
+  !in_array($incidentPhase, $allowedPhase, true) ||
+  !in_array($caseStatus, $allowedCase, true)
+) {
   http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "Invalid payload"]);
+  echo json_encode([
+    "ok" => false,
+    "message" => "Invalid payload"
+  ]);
   exit;
 }
 
-$now = gmdate("Y-m-d H:i:s");
 $adminId = (int)($AUTH_USER["id"] ?? 0);
-
-$reviewedAt = null;
-$resolvedAt = null;
-
-if ($status === "REVIEWED") $reviewedAt = $now;
-if ($status === "RESOLVED") $resolvedAt = $now;
+$now = gmdate("Y-m-d H:i:s");
 
 function queue_user_notification(
   PDO $pdo,
@@ -72,7 +87,13 @@ try {
   $pdo->beginTransaction();
 
   $oldStmt = $pdo->prepare("
-    SELECT id, title, reporter_user_id, status
+    SELECT
+      id,
+      title,
+      reporter_user_id,
+      verification_status,
+      incident_phase,
+      case_status
     FROM incident_reports
     WHERE id = ?
     LIMIT 1
@@ -83,46 +104,105 @@ try {
   if (!$old) {
     $pdo->rollBack();
     http_response_code(404);
-    echo json_encode(["ok" => false, "message" => "Incident not found"]);
+    echo json_encode([
+      "ok" => false,
+      "message" => "Incident not found"
+    ]);
     exit;
+  }
+
+  $reviewedAt = null;
+  $resolvedAt = null;
+
+  if ($verificationStatus === "VERIFIED" && empty($old["reviewed_at"])) {
+    $reviewedAt = $now;
+  }
+
+  if ($incidentPhase === "RESOLVED") {
+    $resolvedAt = $now;
   }
 
   $stmt = $pdo->prepare("
     UPDATE incident_reports
-    SET status = :status,
-        admin_notes = :notes,
-        reviewed_by = CASE WHEN :setReviewed = 1 THEN :adminId ELSE reviewed_by END,
-        reviewed_at = CASE WHEN :setReviewed = 1 THEN :reviewedAt ELSE reviewed_at END,
-        resolved_at = CASE WHEN :setResolved = 1 THEN :resolvedAt ELSE resolved_at END
+    SET
+      verification_status = :verification_status,
+      incident_phase = :incident_phase,
+      case_status = :case_status,
+      admin_notes = :admin_notes,
+      reviewed_by = :reviewed_by,
+      reviewed_at = CASE
+        WHEN :set_reviewed_at = 1 THEN :reviewed_at
+        ELSE reviewed_at
+      END,
+      resolved_at = CASE
+        WHEN :set_resolved_at = 1 THEN :resolved_at
+        ELSE resolved_at
+      END
     WHERE id = :id
   ");
+
   $stmt->execute([
-    ":status" => $status,
-    ":notes" => $notes,
-    ":setReviewed" => ($status === "REVIEWED") ? 1 : 0,
-    ":setResolved" => ($status === "RESOLVED") ? 1 : 0,
-    ":adminId" => $adminId,
-    ":reviewedAt" => $reviewedAt,
-    ":resolvedAt" => $resolvedAt,
+    ":verification_status" => $verificationStatus,
+    ":incident_phase" => $incidentPhase,
+    ":case_status" => $caseStatus,
+    ":admin_notes" => $notes,
+    ":reviewed_by" => $adminId,
+    ":set_reviewed_at" => ($verificationStatus === "VERIFIED") ? 1 : 0,
+    ":reviewed_at" => $now,
+    ":set_resolved_at" => ($incidentPhase === "RESOLVED") ? 1 : 0,
+    ":resolved_at" => $now,
     ":id" => $id
   ]);
 
-  $oldStatus = strtoupper((string)($old["status"] ?? ""));
+  $historyStmt = $pdo->prepare("
+    INSERT INTO incident_status_history
+    (
+      incident_id,
+      old_phase,
+      new_phase,
+      old_case_status,
+      new_case_status,
+      old_verification_status,
+      new_verification_status,
+      remarks,
+      changed_by
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ");
+  $historyStmt->execute([
+    $id,
+    $old["incident_phase"],
+    $incidentPhase,
+    $old["case_status"],
+    $caseStatus,
+    $old["verification_status"],
+    $verificationStatus,
+    $notes,
+    $adminId
+  ]);
+
   $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
 
-  if ($reporterUserId > 0 && $oldStatus !== $status) {
-    $title = "Incident Report Update";
+  if (
+    $reporterUserId > 0 &&
+    (
+      strtoupper((string)$old["verification_status"]) !== $verificationStatus ||
+      strtoupper((string)$old["incident_phase"]) !== $incidentPhase ||
+      strtoupper((string)$old["case_status"]) !== $caseStatus
+    )
+  ) {
     $incidentTitle = trim((string)($old["title"] ?? ""));
     if ($incidentTitle === "") $incidentTitle = "Untitled Incident";
 
-    $message = "Your reported incident \"" . $incidentTitle . "\" is now marked as {$status}.";
+    $title = "Incident Report Update";
+    $message = "Your reported incident \"{$incidentTitle}\" was updated. Verification: {$verificationStatus}, Phase: {$incidentPhase}, Case: {$caseStatus}.";
     if ($notes !== "") {
-      $message .= " Admin note: " . $notes;
+      $message .= " Admin note: {$notes}";
     }
 
     $severity = "MEDIUM";
-    if ($status === "RESOLVED") $severity = "LOW";
-    if ($status === "REJECTED") $severity = "HIGH";
+    if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") $severity = "LOW";
+    if ($verificationStatus === "FALSE_REPORT" || $incidentPhase === "REJECTED") $severity = "HIGH";
 
     queue_user_notification(
       $pdo,
@@ -131,7 +211,7 @@ try {
       $title,
       $message,
       null,
-      (int)$old["id"],
+      $id,
       $severity
     );
   }
@@ -140,7 +220,7 @@ try {
 
   echo json_encode([
     "ok" => true,
-    "message" => "Updated"
+    "message" => "Incident updated successfully"
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();
