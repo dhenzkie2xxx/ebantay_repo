@@ -6,6 +6,8 @@ $hotspotStmt = $pdo->query("
   SELECT id, name, lat, lng, radius_m, hotspot_type, risk_level, last_detected_at
   FROM crime_hotspots
   WHERE active = 1
+    AND lat IS NOT NULL
+    AND lng IS NOT NULL
   ORDER BY
     CASE risk_level
       WHEN 'HIGH' THEN 1
@@ -30,6 +32,8 @@ $panicStmt = $pdo->query("
   FROM panic_requests p
   JOIN users u ON u.id = p.user_id
   WHERE p.status IN ('new', 'ack')
+    AND p.lat IS NOT NULL
+    AND p.lng IS NOT NULL
   ORDER BY
     CASE p.level
       WHEN 'urgent' THEN 1
@@ -37,9 +41,50 @@ $panicStmt = $pdo->query("
       ELSE 3
     END,
     p.created_at DESC
-  LIMIT 100
+  LIMIT 200
 ");
 $panic = $panicStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$verifiedStmt = $pdo->query("
+  SELECT
+    id,
+    title,
+    incident_type,
+    lat,
+    lng,
+    barangay,
+    city_municipality,
+    date_reported,
+    created_at
+  FROM incident_reports
+  WHERE verification_status = 'VERIFIED'
+    AND lat IS NOT NULL
+    AND lng IS NOT NULL
+  ORDER BY created_at DESC
+  LIMIT 1000
+");
+$verified = $verifiedStmt->fetchAll(PDO::FETCH_ASSOC);
+
+$pendingStmt = $pdo->query("
+  SELECT
+    id,
+    incident_code,
+    title,
+    incident_type,
+    lat,
+    lng,
+    barangay,
+    city_municipality,
+    verification_status,
+    created_at
+  FROM incident_reports
+  WHERE verification_status = 'PENDING'
+    AND lat IS NOT NULL
+    AND lng IS NOT NULL
+  ORDER BY created_at DESC
+  LIMIT 300
+");
+$pending = $pendingStmt->fetchAll(PDO::FETCH_ASSOC);
 
 echo json_encode([
   "ok" => true,
@@ -55,6 +100,7 @@ echo json_encode([
       "last_detected_at" => $r["last_detected_at"]
     ];
   }, $hotspots),
+
   "panic_queue" => array_map(function($r) {
     return [
       "id" => (int)$r["id"],
@@ -65,5 +111,34 @@ echo json_encode([
       "created_at" => $r["created_at"],
       "user_name" => trim(($r["firstname"] ?? "") . " " . ($r["lastname"] ?? ""))
     ];
-  }, $panic)
+  }, $panic),
+
+  "verified_points" => array_map(function($r) {
+    return [
+      "id" => (int)$r["id"],
+      "title" => $r["title"],
+      "incident_type" => $r["incident_type"],
+      "lat" => (float)$r["lat"],
+      "lng" => (float)$r["lng"],
+      "barangay" => $r["barangay"],
+      "city_municipality" => $r["city_municipality"],
+      "date_reported" => $r["date_reported"],
+      "created_at" => $r["created_at"]
+    ];
+  }, $verified),
+
+  "pending_reports" => array_map(function($r) {
+    return [
+      "id" => (int)$r["id"],
+      "incident_code" => $r["incident_code"],
+      "title" => $r["title"],
+      "incident_type" => $r["incident_type"],
+      "lat" => (float)$r["lat"],
+      "lng" => (float)$r["lng"],
+      "barangay" => $r["barangay"],
+      "city_municipality" => $r["city_municipality"],
+      "verification_status" => $r["verification_status"],
+      "created_at" => $r["created_at"]
+    ];
+  }, $pending)
 ]);
