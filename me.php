@@ -1,40 +1,34 @@
 <?php
-require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/auth_helpers.php";
+
 header("Content-Type: application/json; charset=UTF-8");
 
-function out($code, $payload) {
-  http_response_code($code);
-  echo json_encode($payload);
-  exit;
+$token = bearer_token();
+if ($token === "") {
+  auth_out(401, ["ok" => false, "message" => "Missing Bearer token"]);
 }
 
-if ($_SERVER["REQUEST_METHOD"] !== "POST") {
-  out(405, ["ok" => false, "message" => "Method not allowed"]);
+$user = auth_get_user_by_token($pdo, $token);
+if (!$user) {
+  auth_out(401, ["ok" => false, "message" => "Unauthorized"]);
 }
 
-$raw = file_get_contents("php://input");
-$data = json_decode($raw, true);
+if (auth_check_token_expired($user)) {
+  auth_out(401, ["ok" => false, "message" => "Token expired"]);
+}
 
-$token = trim($data["token"] ?? "");
-if ($token === "") out(400, ["ok" => false, "message" => "Missing token"]);
-
-$q = $pdo->prepare("SELECT id, firstname, lastname, username, role, api_token_expires
-                    FROM users WHERE api_token = ? LIMIT 1");
-$q->execute([$token]);
-$user = $q->fetch(PDO::FETCH_ASSOC);
-
-if (!$user) out(401, ["ok" => false, "message" => "Unauthorized"]);
-
-$exp = $user["api_token_expires"] ? strtotime($user["api_token_expires"]) : 0;
-if ($exp > 0 && time() > $exp) out(401, ["ok" => false, "message" => "Token expired"]);
-
-out(200, [
+auth_out(200, [
   "ok" => true,
   "user" => [
     "id" => (int)$user["id"],
     "firstname" => $user["firstname"],
     "lastname" => $user["lastname"],
+    "email" => $user["email"],
     "username" => $user["username"],
     "role" => $user["role"],
+    "station_id" => !empty($user["station_id"]) ? (int)$user["station_id"] : null,
+    "station_name" => $user["station_name"] ?? null,
+    "station_verification_status" => $user["station_verification_status"] ?? null,
+    "account_status" => $user["account_status"] ?? null
   ]
 ]);

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/cors.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=utf-8");
 
@@ -24,9 +25,25 @@ if ($username === "" || $password === "") {
 
 try {
   $stmt = $pdo->prepare("
-    SELECT id, lastname, firstname, email, username, password_hash, role, is_email_verified
-    FROM users
-    WHERE username = ?
+    SELECT
+      u.id,
+      u.lastname,
+      u.firstname,
+      u.email,
+      u.username,
+      u.password_hash,
+      u.role,
+      u.valid,
+      u.is_email_verified,
+      u.station_id,
+      u.account_status,
+      u.rejected_reason,
+      ps.station_name,
+      ps.verification_status AS station_verification_status,
+      ps.is_active AS station_is_active
+    FROM users u
+    LEFT JOIN police_stations ps ON ps.id = u.station_id
+    WHERE u.username = ?
     LIMIT 1
   ");
   $stmt->execute([$username]);
@@ -42,11 +59,65 @@ try {
     http_response_code(403);
     echo json_encode([
       "ok" => false,
+      "code" => "EMAIL_NOT_VERIFIED",
       "message" => "Please verify your email to continue.",
       "needs_verification" => true,
       "email" => $user["email"]
     ]);
     exit;
+  }
+
+  if ($user["role"] === "admin") {
+    $gate = auth_admin_station_gate($user);
+    if ($gate !== null) {
+      http_response_code($gate["code"]);
+      echo json_encode($gate["payload"]);
+      exit;
+    }
+  }
+
+  if ($user["role"] === "citizen") {
+    $token = bin2hex(random_bytes(32));
+    $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24 * 7);
+
+    $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
+    $upd->execute([$token, $expires, $user["id"]]);
+
+    echo json_encode([
+      "ok" => true,
+      "message" => "Login successful",
+      "token" => $token,
+      "token_expires" => $expires,
+      "user" => [
+        "id" => (int)$user["id"],
+        "lastname" => $user["lastname"],
+        "firstname" => $user["firstname"],
+        "username" => $user["username"],
+        "role" => $user["role"]
+      ]
+    ]);
+    exit;
+  }
+
+  if ($user["role"] !== "admin" && $user["role"] !== "super_admin") {
+    http_response_code(403);
+    echo json_encode([
+      "ok" => false,
+      "message" => "Role not allowed."
+    ]);
+    exit;
+  }
+
+  if ($user["role"] === "super_admin") {
+    if (($user["valid"] ?? "unvalid") !== "valid") {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "code" => "ACCOUNT_NOT_VALID",
+        "message" => "Super admin account is not valid."
+      ]);
+      exit;
+    }
   }
 
   $token = bin2hex(random_bytes(32));
@@ -65,10 +136,16 @@ try {
       "lastname" => $user["lastname"],
       "firstname" => $user["firstname"],
       "username" => $user["username"],
-      "role" => $user["role"]
+      "role" => $user["role"],
+      "station_id" => $user["station_id"] ? (int)$user["station_id"] : null,
+      "station_name" => $user["station_name"],
+      "station_verification_status" => $user["station_verification_status"]
     ]
   ]);
 } catch (Throwable $e) {
   http_response_code(500);
-  echo json_encode(["ok" => false, "message" => "Server error. Please try again later."]);
+  echo json_encode([
+    "ok" => false,
+    "message" => "Server error. Please try again later."
+  ]);
 }
