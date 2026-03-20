@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/require_admin_or_super_admin.php";
 header("Content-Type: application/json; charset=UTF-8");
 
 $hotspotStmt = $pdo->query("
