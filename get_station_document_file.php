@@ -1,5 +1,35 @@
 <?php
-require_once __DIR__ . "/require_admin_or_super_admin.php";
+require_once __DIR__ . "/auth_helpers.php";
+
+function file_token_from_request(): string {
+  $token = bearer_token();
+  if ($token !== "") return $token;
+
+  $queryToken = trim((string)($_GET["token"] ?? ""));
+  if ($queryToken !== "") return $queryToken;
+
+  return "";
+}
+
+$token = file_token_from_request();
+if ($token === "") {
+  http_response_code(401);
+  echo "Missing token";
+  exit;
+}
+
+$user = auth_get_user_by_token($pdo, $token);
+if (!$user) {
+  http_response_code(401);
+  echo "Invalid token";
+  exit;
+}
+
+if (auth_check_token_expired($user)) {
+  http_response_code(401);
+  echo "Token expired";
+  exit;
+}
 
 $documentId = (int)($_GET["id"] ?? 0);
 if ($documentId <= 0) {
@@ -31,8 +61,8 @@ try {
     exit;
   }
 
-  $isSuper = (($AUTH_USER["role"] ?? "") === "super_admin");
-  $isOwnerAdmin = (($AUTH_USER["role"] ?? "") === "admin" && (int)$file["created_by"] === (int)$AUTH_USER["id"]);
+  $isSuper = (($user["role"] ?? "") === "super_admin");
+  $isOwnerAdmin = (($user["role"] ?? "") === "admin" && (int)$file["created_by"] === (int)$user["id"]);
 
   if (!$isSuper && !$isOwnerAdmin) {
     http_response_code(403);
