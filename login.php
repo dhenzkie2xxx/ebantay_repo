@@ -205,7 +205,8 @@ try {
       "role" => $user["role"],
       "station_id" => $user["station_id"] ? (int)$user["station_id"] : null,
       "station_name" => $user["station_name"],
-      "station_verification_status" => $user["station_verification_status"]
+      "station_verification_status" => $user["station_verification_status"],
+      "account_status" => $user["account_status"] ?? null
     ]
   ]);
 } catch (Throwable $e) {
