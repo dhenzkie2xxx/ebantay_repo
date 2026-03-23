@@ -67,39 +67,7 @@ try {
     exit;
   }
 
-  if ($user["role"] === "admin") {
-    $gate = auth_admin_station_gate($user);
-    if ($gate !== null) {
-      http_response_code($gate["code"]);
-      echo json_encode($gate["payload"]);
-      exit;
-    }
-  }
-
-  if ($user["role"] === "citizen") {
-    $token = bin2hex(random_bytes(32));
-    $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24 * 7);
-
-    $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
-    $upd->execute([$token, $expires, $user["id"]]);
-
-    echo json_encode([
-      "ok" => true,
-      "message" => "Login successful",
-      "token" => $token,
-      "token_expires" => $expires,
-      "user" => [
-        "id" => (int)$user["id"],
-        "lastname" => $user["lastname"],
-        "firstname" => $user["firstname"],
-        "username" => $user["username"],
-        "role" => $user["role"]
-      ]
-    ]);
-    exit;
-  }
-
-  if ($user["role"] !== "admin" && $user["role"] !== "super_admin") {
+  if ($user["role"] !== "citizen" && $user["role"] !== "admin" && $user["role"] !== "super_admin") {
     http_response_code(403);
     echo json_encode([
       "ok" => false,
@@ -120,21 +88,119 @@ try {
     }
   }
 
+  // citizen login remains normal
+  if ($user["role"] === "citizen") {
+    $token = bin2hex(random_bytes(32));
+    $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24 * 7);
+
+    $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
+    $upd->execute([$token, $expires, $user["id"]]);
+
+    echo json_encode([
+      "ok" => true,
+      "message" => "Login successful",
+      "token" => $token,
+      "token_expires" => $expires,
+      "onboarding_only" => false,
+      "user" => [
+        "id" => (int)$user["id"],
+        "lastname" => $user["lastname"],
+        "firstname" => $user["firstname"],
+        "email" => $user["email"],
+        "username" => $user["username"],
+        "role" => $user["role"]
+      ]
+    ]);
+    exit;
+  }
+
   $token = bin2hex(random_bytes(32));
   $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24 * 7);
 
   $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
   $upd->execute([$token, $expires, $user["id"]]);
 
+  // admin onboarding logic
+  if ($user["role"] === "admin") {
+    $stationStatus = $user["station_verification_status"] ?? null;
+    $stationActive = (int)($user["station_is_active"] ?? 0);
+    $accountStatus = $user["account_status"] ?? "pending";
+
+    // hard block only disabled admin accounts
+    if ($accountStatus === "disabled") {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "code" => "ACCOUNT_DISABLED",
+        "message" => "Your admin account is disabled."
+      ]);
+      exit;
+    }
+
+    $onboardingOnly = true;
+    $code = "STATION_INCOMPLETE";
+    $message = "Your police station registration is incomplete.";
+
+    if (empty($user["station_id"])) {
+      $code = "STATION_NOT_REGISTERED";
+      $message = "No police station is linked to this admin account yet.";
+    } elseif ($stationStatus === "approved" && $stationActive === 1 && $accountStatus === "active") {
+      $onboardingOnly = false;
+      $code = null;
+      $message = "Login successful";
+    } elseif ($stationStatus === "pending" || $stationStatus === "under_review") {
+      $code = "STATION_PENDING";
+      $message = "Your police station account is pending verification.";
+    } elseif ($stationStatus === "rejected") {
+      $code = "STATION_REJECTED";
+      $message = "Your police station registration was rejected.";
+    } elseif ($stationStatus === "resubmission_required") {
+      $code = "STATION_RESUBMIT";
+      $message = "Your police station registration requires resubmission.";
+    } elseif ($stationStatus === "draft" || $stationStatus === null) {
+      $code = "STATION_INCOMPLETE";
+      $message = "Your police station registration is incomplete.";
+    } else {
+      $code = "STATION_NOT_APPROVED";
+      $message = "Your police station is not approved yet.";
+    }
+
+    echo json_encode([
+      "ok" => true,
+      "message" => $message,
+      "code" => $code,
+      "token" => $token,
+      "token_expires" => $expires,
+      "onboarding_only" => $onboardingOnly,
+      "user" => [
+        "id" => (int)$user["id"],
+        "lastname" => $user["lastname"],
+        "firstname" => $user["firstname"],
+        "email" => $user["email"],
+        "username" => $user["username"],
+        "role" => $user["role"],
+        "station_id" => $user["station_id"] ? (int)$user["station_id"] : null,
+        "station_name" => $user["station_name"],
+        "station_verification_status" => $stationStatus,
+        "account_status" => $accountStatus
+      ],
+      "rejected_reason" => $user["rejected_reason"] ?? null
+    ]);
+    exit;
+  }
+
+  // super admin normal login
   echo json_encode([
     "ok" => true,
     "message" => "Login successful",
     "token" => $token,
     "token_expires" => $expires,
+    "onboarding_only" => false,
     "user" => [
       "id" => (int)$user["id"],
       "lastname" => $user["lastname"],
       "firstname" => $user["firstname"],
+      "email" => $user["email"],
       "username" => $user["username"],
       "role" => $user["role"],
       "station_id" => $user["station_id"] ? (int)$user["station_id"] : null,
