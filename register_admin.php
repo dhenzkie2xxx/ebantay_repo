@@ -3,7 +3,6 @@ header("Content-Type: application/json");
 
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/mailer.php";
-require __DIR__ . "/vendor/autoload.php";
 
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   http_response_code(405);
@@ -11,8 +10,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   exit;
 }
 
-$raw = file_get_contents("php://input");
-$data = json_decode($raw, true);
+$data = json_decode(file_get_contents("php://input"), true);
 
 if (!is_array($data)) {
   http_response_code(400);
@@ -20,13 +18,15 @@ if (!is_array($data)) {
   exit;
 }
 
+/* ================= INPUT ================= */
 $firstname = trim($data["firstname"] ?? "");
 $lastname  = trim($data["lastname"] ?? "");
 $email     = trim($data["email"] ?? "");
 $username  = trim($data["username"] ?? "");
 $password  = (string)($data["password"] ?? "");
 
-if ($firstname === "" || $lastname === "" || $email === "" || $username === "" || $password === "") {
+/* ================= VALIDATION ================= */
+if (!$firstname || !$lastname || !$email || !$username || !$password) {
   http_response_code(400);
   echo json_encode(["ok" => false, "message" => "All fields are required"]);
   exit;
@@ -50,24 +50,24 @@ if (strlen($password) < 6) {
   exit;
 }
 
-$check = $pdo->prepare("SELECT id FROM users WHERE email = ? OR username = ? LIMIT 1");
-$check->execute([$email, $username]);
+try {
+  /* ================= DUPLICATE CHECK ================= */
+  $check = $pdo->prepare("SELECT id FROM users WHERE email = ? OR username = ? LIMIT 1");
+  $check->execute([$email, $username]);
 
-if ($check->fetch()) {
-  http_response_code(409);
-  echo json_encode(["ok" => false, "message" => "Email or Username already exists"]);
-  exit;
-}
+  if ($check->fetch()) {
+    http_response_code(409);
+    echo json_encode(["ok" => false, "message" => "Email or username already exists"]);
+    exit;
+  }
 
-$passwordHash = password_hash($password, PASSWORD_DEFAULT);
-$token = bin2hex(random_bytes(32));
-$expires = date("Y-m-d H:i:s", time() + 86400);
+  /* ================= CREATE USER ================= */
+  $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+  $token = bin2hex(random_bytes(32));
+  $expires = date("Y-m-d H:i:s", time() + 86400);
 
-$baseUrl = "https://ebantay.top.gen.in";
-$verifyLink = $baseUrl . "/verify.php?token=" . $token;
-
-$stmt = $pdo->prepare(
-  "INSERT INTO users (
+  $stmt = $pdo->prepare("
+    INSERT INTO users (
       lastname,
       firstname,
       email,
@@ -78,37 +78,53 @@ $stmt = $pdo->prepare(
       is_email_verified,
       email_verify_token,
       email_verify_expires,
-      account_status
-   ) VALUES (?, ?, ?, ?, ?, 'admin', 'unvalid', 0, ?, ?, 'pending')"
-);
+      account_status,
+      station_id
+    ) VALUES (?, ?, ?, ?, ?, 'admin', 'unvalid', 0, ?, ?, 'pending', NULL)
+  ");
 
-$stmt->execute([
-  $lastname,
-  $firstname,
-  $email,
-  $username,
-  $passwordHash,
-  $token,
-  $expires
-]);
+  $stmt->execute([
+    $lastname,
+    $firstname,
+    $email,
+    $username,
+    $passwordHash,
+    $token,
+    $expires
+  ]);
 
-$fullName = $firstname . " " . $lastname;
-$sent = false;
-$mailError = null;
+  /* ================= EMAIL ================= */
+  $baseUrl = "https://ebantay.top.gen.in";
+  $verifyLink = $baseUrl . "/verify.php?token=" . $token;
 
-try {
-  $sent = sendVerificationEmail($email, $fullName, $verifyLink);
+  $fullName = $firstname . " " . $lastname;
+
+  $sent = false;
+  $mailError = null;
+
+  try {
+    $sent = sendVerificationEmail($email, $fullName, $verifyLink);
+  } catch (Throwable $e) {
+    $mailError = $e->getMessage();
+    error_log("MAIL ERROR: " . $mailError);
+  }
+
+  /* ================= RESPONSE ================= */
+  echo json_encode([
+    "ok" => true,
+    "message" => $sent
+      ? "Registration successful. Please verify your email."
+      : "Registered, but email failed to send.",
+    "needs_verification" => true,
+    "mail_sent" => $sent
+  ]);
+
 } catch (Throwable $e) {
-  $mailError = $e->getMessage();
-}
+  error_log("REGISTER ADMIN ERROR: " . $e->getMessage());
 
-echo json_encode([
-  "ok" => true,
-  "message" => $sent
-    ? "Admin registration successful. Please verify your email."
-    : "Admin registration successful, but failed to send verification email.",
-  "needs_verification" => true,
-  "mail_sent" => $sent,
-  "mail_error" => $mailError
-]);
-exit;
+  http_response_code(500);
+  echo json_encode([
+    "ok" => false,
+    "message" => "Server error. Please try again later."
+  ]);
+}
