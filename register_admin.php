@@ -55,12 +55,27 @@ try {
   /* ================= DUPLICATE CHECK ================= */
   $check = $pdo->prepare("SELECT id FROM users WHERE email = ? OR username = ? LIMIT 1");
   $check->execute([$email, $username]);
+$check = $pdo->prepare("SELECT email, username FROM users WHERE email = ? OR username = ? LIMIT 1");
+$check->execute([$email, $username]);
+$existing = $check->fetch(PDO::FETCH_ASSOC);
 
-  if ($check->fetch()) {
+if ($existing) {
+  if (($existing["email"] ?? "") === $email) {
     http_response_code(409);
-    echo json_encode(["ok" => false, "message" => "Email or username already exists"]);
+    echo json_encode(["ok" => false, "message" => "Email already exists"]);
     exit;
   }
+
+  if (($existing["username"] ?? "") === $username) {
+    http_response_code(409);
+    echo json_encode(["ok" => false, "message" => "Username already exists"]);
+    exit;
+  }
+
+  http_response_code(409);
+  echo json_encode(["ok" => false, "message" => "Email or username already exists"]);
+  exit;
+}
 
   /* ================= CREATE USER ================= */
   $passwordHash = password_hash($password, PASSWORD_DEFAULT);
