@@ -85,7 +85,7 @@ try {
     $verifyLink = "ebantay://verify?token=" . $token;
   } else {
     // Web / React route
-    $verifyLink = rtrim($appUrl, "/") . "/verify?token=" . $token;
+    $verifyLink = rtrim($appUrl, "/") . "/verify.php?token=" . $token;
   }
 
   // Send email

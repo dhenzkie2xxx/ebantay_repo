@@ -109,7 +109,7 @@ try {
   $expires = date("Y-m-d H:i:s", time() + 86400);
 
   $appUrl = getenv("APP_URL") ?: "https://ebantay.top.gen.in";
-  $verifyLink = rtrim($appUrl, "/") . "/verify?token=" . $token;
+  $verifyLink = rtrim($appUrl, "/") . "/verify.php?token=" . $token;
 
   $stmt = $pdo->prepare("
     INSERT INTO users (
