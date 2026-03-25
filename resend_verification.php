@@ -30,7 +30,6 @@ if ($emailOrUsername === "") {
 }
 
 try {
-  // Find user by email OR username
   $stmt = $pdo->prepare("
     SELECT
       id,
@@ -38,6 +37,7 @@ try {
       lastname,
       email,
       username,
+      role,
       is_email_verified
     FROM users
     WHERE email = ? OR username = ?
@@ -46,7 +46,7 @@ try {
   $stmt->execute([$emailOrUsername, $emailOrUsername]);
   $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-  // Do not leak whether account exists
+  // Don't leak whether account exists
   if (!$user) {
     http_response_code(200);
     echo json_encode([
@@ -65,11 +65,9 @@ try {
     exit;
   }
 
-  // Generate new token + expiry (24 hours)
   $token = bin2hex(random_bytes(32));
   $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24);
 
-  // Save to DB
   $upd = $pdo->prepare("
     UPDATE users
     SET email_verify_token = ?, email_verify_expires = ?
@@ -77,22 +75,22 @@ try {
   ");
   $upd->execute([$token, $expires, $user["id"]]);
 
-  // Build verification link
   $appUrl = getenv("APP_URL") ?: "https://ebantay.top.gen.in";
 
-  if ($platform === "mobile") {
-    // Optional future deep link support
-    $verifyLink = "ebantay://verify?token=" . $token;
-  } else {
-    // Web / React route
-    $verifyLink = rtrim($appUrl, "/") . "/verify.php?token=" . $token;
-  }
+  // With current hosting, safest universal route is verify.php
+  // If you later split mobile/web flows by platform, you can branch here.
+  $verifyLink = rtrim($appUrl, "/") . "/verify.php?token=" . $token;
 
-  // Send email
   $fullName = trim(($user["firstname"] ?? "") . " " . ($user["lastname"] ?? ""));
   $recipientName = $fullName !== "" ? $fullName : ($user["username"] ?? "User");
 
-  $sent = sendVerificationEmail($user["email"], $recipientName, $verifyLink);
+  $sent = false;
+  try {
+    $sent = sendVerificationEmail($user["email"], $recipientName, $verifyLink);
+  } catch (Throwable $e) {
+    error_log("RESEND_VERIFICATION MAIL ERROR: " . $e->getMessage());
+    $sent = false;
+  }
 
   if (!$sent) {
     http_response_code(500);
