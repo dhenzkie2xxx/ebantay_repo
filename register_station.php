@@ -351,6 +351,8 @@ try {
 
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => $e->getMessage(),
+    "line" => $e->getLine(),
+    "file" => $e->getFile()
   ]);
 }
