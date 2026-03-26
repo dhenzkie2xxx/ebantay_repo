@@ -1,146 +1,374 @@
 <?php
-require_once __DIR__ . "/require_super_admin.php";
+require_once __DIR__ . "/require_admin_account.php";
+require_once __DIR__ . "/station_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-$status = trim((string)($_GET["status"] ?? ""));
-$keyword = trim((string)($_GET["keyword"] ?? ""));
-$limit = (int)($_GET["limit"] ?? 20);
+$data = station_json_input();
 
-if ($limit < 1) $limit = 20;
-if ($limit > 100) $limit = 100;
-
-$allowedStatuses = [
-  "draft",
-  "pending",
-  "under_review",
-  "approved",
-  "rejected",
-  "resubmission_required"
+$required = [
+  "station_name",
+  "station_type",
+  "region",
+  "city_municipality",
+  "full_address",
+  "lat",
+  "lng",
+  "contact_person"
 ];
 
-$where = [];
-$params = [];
+$missing = station_require_fields($data, $required);
+if (!empty($missing)) {
+  auth_out(400, [
+    "ok" => false,
+    "message" => "Missing required fields.",
+    "missing_fields" => $missing
+  ]);
+}
 
-if ($status !== "") {
-  if (!in_array($status, $allowedStatuses, true)) {
-    auth_out(400, ["ok" => false, "message" => "Invalid status filter."]);
+$stationType = station_clean($data["station_type"] ?? "");
+if (!in_array($stationType, station_allowed_types(), true)) {
+  auth_out(400, ["ok" => false, "message" => "Invalid station type."]);
+}
+
+$coordError = station_validate_coordinates($data["lat"] ?? null, $data["lng"] ?? null);
+if ($coordError !== null) {
+  auth_out(400, ["ok" => false, "message" => $coordError]);
+}
+
+$stationName = station_clean($data["station_name"] ?? "");
+$region = station_clean($data["region"] ?? "");
+$province = station_nullable_string($data["province"] ?? null);
+$cityMunicipality = station_clean($data["city_municipality"] ?? "");
+$barangay = station_nullable_string($data["barangay"] ?? null);
+$sitio = station_nullable_string($data["sitio"] ?? null);
+$streetAddress = station_nullable_string($data["street_address"] ?? null);
+$fullAddress = station_clean($data["full_address"] ?? "");
+$lat = (float)$data["lat"];
+$lng = (float)$data["lng"];
+$accuracyM = isset($data["accuracy_m"]) && $data["accuracy_m"] !== "" ? (int)$data["accuracy_m"] : null;
+
+$contactPerson = station_clean($data["contact_person"] ?? "");
+$contactPosition = station_nullable_string($data["contact_position"] ?? null);
+$contactMobile = station_nullable_string($data["contact_mobile"] ?? null);
+$contactLandline = station_nullable_string($data["contact_landline"] ?? null);
+$contactEmail = station_nullable_string($data["contact_email"] ?? null);
+$operatingHours = station_nullable_string($data["operating_hours"] ?? null);
+$emergencyContact = station_nullable_string($data["emergency_contact"] ?? null);
+
+/*
+|--------------------------------------------------------------------------
+| Default contact email to logged-in admin email if empty
+|--------------------------------------------------------------------------
+*/
+if (!$contactEmail) {
+  $contactEmail = $AUTH_USER["email"] ?? null;
+
+  if (!$contactEmail) {
+    $userStmt = $pdo->prepare("
+      SELECT email
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    ");
+    $userStmt->execute([$AUTH_USER["id"]]);
+    $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
+    $contactEmail = $userRow["email"] ?? null;
   }
-  $where[] = "ps.verification_status = ?";
-  $params[] = $status;
 }
 
-if ($keyword !== "") {
-  $where[] = "(
-    ps.station_name LIKE ?
-    OR ps.station_code LIKE ?
-    OR ps.city_municipality LIKE ?
-    OR ps.province LIKE ?
-    OR ps.region LIKE ?
-    OR u.firstname LIKE ?
-    OR u.lastname LIKE ?
-    OR u.username LIKE ?
-    OR u.email LIKE ?
-  )";
-  $kw = "%" . $keyword . "%";
-  for ($i = 0; $i < 9; $i++) {
-    $params[] = $kw;
+if ($contactEmail !== null && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
+  auth_out(400, ["ok" => false, "message" => "Invalid contact email format."]);
+}
+
+/*
+|--------------------------------------------------------------------------
+| operating_hours JSON validation
+| Supports:
+| 1) Old format:
+|    { "Monday": { "enabled": true, "open": "08:00", "close": "17:00" } }
+|
+| 2) New format:
+|    {
+|      "is_24_7": true,
+|      "days": {
+|        "Monday": { "enabled": true, "open": "08:00", "close": "17:00" }
+|      }
+|    }
+|--------------------------------------------------------------------------
+*/
+if ($operatingHours !== null) {
+  $decodedOperatingHours = json_decode($operatingHours, true);
+
+  if (json_last_error() !== JSON_ERROR_NONE || !is_array($decodedOperatingHours)) {
+    auth_out(400, [
+      "ok" => false,
+      "message" => "Invalid operating hours format."
+    ]);
+  }
+
+  $allowedDays = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday"
+  ];
+
+  $is24_7 = !empty($decodedOperatingHours["is_24_7"]);
+  $daysBlock = $decodedOperatingHours["days"] ?? $decodedOperatingHours;
+
+  if (!is_array($daysBlock)) {
+    auth_out(400, [
+      "ok" => false,
+      "message" => "Invalid operating hours day structure."
+    ]);
+  }
+
+  foreach ($daysBlock as $day => $row) {
+    if (!in_array($day, $allowedDays, true)) {
+      if ($day === "is_24_7") {
+        continue;
+      }
+
+      auth_out(400, [
+        "ok" => false,
+        "message" => "Invalid operating hours day: {$day}."
+      ]);
+    }
+
+    if (!is_array($row)) {
+      auth_out(400, [
+        "ok" => false,
+        "message" => "Invalid operating hours entry for {$day}."
+      ]);
+    }
+
+    $enabled = (bool)($row["enabled"] ?? false);
+    $open = (string)($row["open"] ?? "");
+    $close = (string)($row["close"] ?? "");
+
+    if (!$is24_7 && $enabled) {
+      if (
+        !preg_match('/^\d{2}:\d{2}$/', $open) ||
+        !preg_match('/^\d{2}:\d{2}$/', $close)
+      ) {
+        auth_out(400, [
+          "ok" => false,
+          "message" => "Invalid open/close time format for {$day}."
+        ]);
+      }
+
+      if ($open >= $close) {
+        auth_out(400, [
+          "ok" => false,
+          "message" => "Opening time must be earlier than closing time for {$day}."
+        ]);
+      }
+    }
   }
 }
-
-$whereSql = "";
-if ($where) {
-  $whereSql = "WHERE " . implode(" AND ", $where);
-}
-
-$sql = "
-  SELECT
-    ps.id,
-    ps.station_code,
-    ps.station_name,
-    ps.station_type,
-    ps.region,
-    ps.province,
-    ps.city_municipality,
-    ps.barangay,
-    ps.operating_hours,
-    ps.verification_status,
-    ps.is_active,
-    ps.submitted_at,
-    ps.reviewed_at,
-    ps.approved_at,
-    ps.rejection_reason,
-    ps.created_at,
-    u.id AS admin_user_id,
-    u.firstname,
-    u.lastname,
-    u.username,
-    u.email,
-    u.account_status,
-    (
-      SELECT COUNT(*)
-      FROM police_station_documents d
-      WHERE d.station_id = ps.id
-        AND d.is_current = 1
-    ) AS document_count
-  FROM police_stations ps
-  JOIN users u ON u.id = ps.created_by
-  $whereSql
-  ORDER BY
-    CASE ps.verification_status
-      WHEN 'pending' THEN 1
-      WHEN 'under_review' THEN 2
-      WHEN 'resubmission_required' THEN 3
-      WHEN 'rejected' THEN 4
-      WHEN 'approved' THEN 5
-      WHEN 'draft' THEN 6
-      ELSE 7
-    END,
-    ps.submitted_at DESC,
-    ps.created_at DESC
-  LIMIT $limit
-";
 
 try {
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute($params);
+  $pdo->beginTransaction();
 
-  $items = [];
-  while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    $items[] = [
-      "id" => (int)$row["id"],
-      "station_code" => $row["station_code"],
-      "station_name" => $row["station_name"],
-      "station_type" => $row["station_type"],
-      "region" => $row["region"],
-      "province" => $row["province"],
-      "city_municipality" => $row["city_municipality"],
-      "barangay" => $row["barangay"],
-      "operating_hours" => $row["operating_hours"],
-      "verification_status" => $row["verification_status"],
-      "is_active" => (int)$row["is_active"],
-      "submitted_at" => $row["submitted_at"],
-      "reviewed_at" => $row["reviewed_at"],
-      "approved_at" => $row["approved_at"],
-      "rejection_reason" => $row["rejection_reason"],
-      "created_at" => $row["created_at"],
-      "admin" => [
-        "id" => (int)$row["admin_user_id"],
-        "firstname" => $row["firstname"],
-        "lastname" => $row["lastname"],
-        "username" => $row["username"],
-        "email" => $row["email"],
-        "account_status" => $row["account_status"]
-      ],
-      "document_count" => (int)$row["document_count"]
-    ];
+  $existingStmt = $pdo->prepare("
+    SELECT id, verification_status
+    FROM police_stations
+    WHERE created_by = ?
+    LIMIT 1
+  ");
+  $existingStmt->execute([$AUTH_USER["id"]]);
+  $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
+
+  if ($existing) {
+    $stationId = (int)$existing["id"];
+    $status = $existing["verification_status"];
+
+    if (!in_array($status, station_can_edit_statuses(), true)) {
+      $pdo->rollBack();
+      auth_out(403, [
+        "ok" => false,
+        "message" => "This station can no longer be edited in its current status.",
+        "verification_status" => $status
+      ]);
+    }
+
+    $dupStmt = $pdo->prepare("
+      SELECT id
+      FROM police_stations
+      WHERE station_name = ?
+        AND city_municipality = ?
+        AND id <> ?
+      LIMIT 1
+    ");
+    $dupStmt->execute([$stationName, $cityMunicipality, $stationId]);
+    if ($dupStmt->fetch()) {
+      $pdo->rollBack();
+      auth_out(409, [
+        "ok" => false,
+        "message" => "Another station with the same name and city already exists."
+      ]);
+    }
+
+    $upd = $pdo->prepare("
+      UPDATE police_stations
+      SET
+        station_type = ?,
+        station_name = ?,
+        region = ?,
+        province = ?,
+        city_municipality = ?,
+        barangay = ?,
+        sitio = ?,
+        street_address = ?,
+        full_address = ?,
+        lat = ?,
+        lng = ?,
+        accuracy_m = ?,
+        contact_person = ?,
+        contact_position = ?,
+        contact_mobile = ?,
+        contact_landline = ?,
+        contact_email = ?,
+        operating_hours = ?,
+        emergency_contact = ?,
+        rejection_reason = CASE
+          WHEN verification_status IN ('rejected','resubmission_required') THEN NULL
+          ELSE rejection_reason
+        END,
+        verification_status = CASE
+          WHEN verification_status IN ('rejected','resubmission_required') THEN 'draft'
+          ELSE verification_status
+        END
+      WHERE id = ?
+    ");
+    $upd->execute([
+      $stationType,
+      $stationName,
+      $region,
+      $province,
+      $cityMunicipality,
+      $barangay,
+      $sitio,
+      $streetAddress,
+      $fullAddress,
+      $lat,
+      $lng,
+      $accuracyM,
+      $contactPerson,
+      $contactPosition,
+      $contactMobile,
+      $contactLandline,
+      $contactEmail,
+      $operatingHours,
+      $emergencyContact,
+      $stationId
+    ]);
+
+    $pdo->commit();
+
+    auth_out(200, [
+      "ok" => true,
+      "message" => "Station updated successfully.",
+      "station_id" => $stationId
+    ]);
   }
+
+  $dupStmt = $pdo->prepare("
+    SELECT id
+    FROM police_stations
+    WHERE station_name = ?
+      AND city_municipality = ?
+    LIMIT 1
+  ");
+  $dupStmt->execute([$stationName, $cityMunicipality]);
+  if ($dupStmt->fetch()) {
+    $pdo->rollBack();
+    auth_out(409, [
+      "ok" => false,
+      "message" => "A station with the same name and city already exists."
+    ]);
+  }
+
+  $stationCode = station_generate_code($cityMunicipality, $stationName);
+
+  $ins = $pdo->prepare("
+    INSERT INTO police_stations (
+      station_code,
+      station_name,
+      station_type,
+      region,
+      province,
+      city_municipality,
+      barangay,
+      sitio,
+      street_address,
+      full_address,
+      lat,
+      lng,
+      accuracy_m,
+      contact_person,
+      contact_position,
+      contact_mobile,
+      contact_landline,
+      contact_email,
+      operating_hours,
+      emergency_contact,
+      verification_status,
+      is_active,
+      created_by
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?
+    )
+  ");
+  $ins->execute([
+    $stationCode,
+    $stationName,
+    $stationType,
+    $region,
+    $province,
+    $cityMunicipality,
+    $barangay,
+    $sitio,
+    $streetAddress,
+    $fullAddress,
+    $lat,
+    $lng,
+    $accuracyM,
+    $contactPerson,
+    $contactPosition,
+    $contactMobile,
+    $contactLandline,
+    $contactEmail,
+    $operatingHours,
+    $emergencyContact,
+    $AUTH_USER["id"]
+  ]);
+
+  $stationId = (int)$pdo->lastInsertId();
+
+  $linkUser = $pdo->prepare("
+    UPDATE users
+    SET station_id = ?, account_status = 'pending', valid = 'unvalid'
+    WHERE id = ?
+  ");
+  $linkUser->execute([$stationId, $AUTH_USER["id"]]);
+
+  $pdo->commit();
 
   auth_out(200, [
     "ok" => true,
-    "items" => $items
+    "message" => "Station registered successfully.",
+    "station_id" => $stationId
   ]);
 } catch (Throwable $e) {
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
+
   auth_out(500, [
     "ok" => false,
     "message" => "Server error. Please try again later."
