@@ -56,47 +56,7 @@ $contactEmail = station_nullable_string($data["contact_email"] ?? null);
 $operatingHours = station_nullable_string($data["operating_hours"] ?? null);
 $emergencyContact = station_nullable_string($data["emergency_contact"] ?? null);
 
-/*
-|--------------------------------------------------------------------------
-| Default contact email to logged-in admin email if empty
-|--------------------------------------------------------------------------
-*/
-if (!$contactEmail) {
-  $contactEmail = $AUTH_USER["email"] ?? null;
-
-  if (!$contactEmail) {
-    $userStmt = $pdo->prepare("
-      SELECT email
-      FROM users
-      WHERE id = ?
-      LIMIT 1
-    ");
-    $userStmt->execute([$AUTH_USER["id"]]);
-    $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
-    $contactEmail = $userRow["email"] ?? null;
-  }
-}
-
-if ($contactEmail !== null && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
-  auth_out(400, ["ok" => false, "message" => "Invalid contact email format."]);
-}
-
-/*
-|--------------------------------------------------------------------------
-| operating_hours JSON validation
-| Supports:
-| 1) Old format:
-|    { "Monday": { "enabled": true, "open": "08:00", "close": "17:00" } }
-|
-| 2) New format:
-|    {
-|      "is_24_7": true,
-|      "days": {
-|        "Monday": { "enabled": true, "open": "08:00", "close": "17:00" }
-|      }
-|    }
-|--------------------------------------------------------------------------
-*/
+/* operating_hours JSON validation */
 if ($operatingHours !== null) {
   $decodedOperatingHours = json_decode($operatingHours, true);
 
@@ -151,10 +111,7 @@ if ($operatingHours !== null) {
     $close = (string)($row["close"] ?? "");
 
     if (!$is24_7 && $enabled) {
-      if (
-        !preg_match('/^\d{2}:\d{2}$/', $open) ||
-        !preg_match('/^\d{2}:\d{2}$/', $close)
-      ) {
+      if (!preg_match('/^\d{2}:\d{2}$/', $open) || !preg_match('/^\d{2}:\d{2}$/', $close)) {
         auth_out(400, [
           "ok" => false,
           "message" => "Invalid open/close time format for {$day}."
@@ -172,6 +129,28 @@ if ($operatingHours !== null) {
 }
 
 try {
+  /*
+  |--------------------------------------------------------------------------
+  | Default contact email to logged-in admin email if empty
+  |--------------------------------------------------------------------------
+  */
+  if (!$contactEmail) {
+    $userStmt = $pdo->prepare("
+      SELECT email
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+    ");
+    $userStmt->execute([$AUTH_USER["id"]]);
+    $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
+
+    $contactEmail = $userRow["email"] ?? null;
+  }
+
+  if ($contactEmail !== null && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
+    auth_out(400, ["ok" => false, "message" => "Invalid contact email format."]);
+  }
+
   $pdo->beginTransaction();
 
   $existingStmt = $pdo->prepare("
@@ -365,9 +344,7 @@ try {
     "station_id" => $stationId
   ]);
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) {
-    $pdo->rollBack();
-  }
+  if ($pdo->inTransaction()) $pdo->rollBack();
 
   auth_out(500, [
     "ok" => false,
