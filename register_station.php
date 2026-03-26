@@ -60,6 +60,64 @@ if ($contactEmail !== null && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL))
   auth_out(400, ["ok" => false, "message" => "Invalid contact email format."]);
 }
 
+/* operating_hours JSON validation */
+if ($operatingHours !== null) {
+  $decodedOperatingHours = json_decode($operatingHours, true);
+
+  if (json_last_error() !== JSON_ERROR_NONE || !is_array($decodedOperatingHours)) {
+    auth_out(400, [
+      "ok" => false,
+      "message" => "Invalid operating hours format."
+    ]);
+  }
+
+  $allowedDays = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday"
+  ];
+
+  foreach ($decodedOperatingHours as $day => $row) {
+    if (!in_array($day, $allowedDays, true)) {
+      auth_out(400, [
+        "ok" => false,
+        "message" => "Invalid operating hours day: {$day}."
+      ]);
+    }
+
+    if (!is_array($row)) {
+      auth_out(400, [
+        "ok" => false,
+        "message" => "Invalid operating hours entry for {$day}."
+      ]);
+    }
+
+    $enabled = (bool)($row["enabled"] ?? false);
+    $open = (string)($row["open"] ?? "");
+    $close = (string)($row["close"] ?? "");
+
+    if ($enabled) {
+      if (!preg_match('/^\d{2}:\d{2}$/', $open) || !preg_match('/^\d{2}:\d{2}$/', $close)) {
+        auth_out(400, [
+          "ok" => false,
+          "message" => "Invalid open/close time format for {$day}."
+        ]);
+      }
+
+      if ($open >= $close) {
+        auth_out(400, [
+          "ok" => false,
+          "message" => "Opening time must be earlier than closing time for {$day}."
+        ]);
+      }
+    }
+  }
+}
+
 try {
   $pdo->beginTransaction();
 
