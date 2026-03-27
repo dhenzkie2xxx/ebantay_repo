@@ -37,7 +37,6 @@ try {
       uploaded_at
     FROM police_station_documents
     WHERE station_id = ?
-      AND is_current = 1
     ORDER BY uploaded_at DESC, id DESC
   ");
   $stmt->execute([$stationId]);
@@ -52,7 +51,7 @@ try {
       "file_ext" => $row["file_ext"],
       "mime_type" => $row["mime_type"],
       "file_size" => (int)$row["file_size"],
-      "download_url" => "/api/get_station_document_file.php?id=" . $row["id"],
+      "download_url" => "/api/get_station_document.php?id=" . $row["id"],
       "remarks" => $row["remarks"],
       "is_required" => (int)$row["is_required"],
       "is_current" => (int)$row["is_current"],
