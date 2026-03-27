@@ -1,4 +1,4 @@
-<?php
+<?php 
 require_once __DIR__ . "/require_admin_account.php";
 
 header("Content-Type: application/json; charset=UTF-8");
@@ -9,6 +9,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST" && $_SERVER["REQUEST_METHOD"] !== "DEL
 
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
+
 $documentId = (int)($data["document_id"] ?? $_GET["document_id"] ?? 0);
 
 if ($documentId <= 0) {
@@ -16,10 +17,10 @@ if ($documentId <= 0) {
 }
 
 try {
+  // ✅ FIX: removed file_path (BLOB system)
   $stmt = $pdo->prepare("
     SELECT
       d.id,
-      d.file_path,
       ps.id AS station_id,
       ps.verification_status
     FROM police_station_documents d
@@ -35,6 +36,7 @@ try {
     auth_out(404, ["ok" => false, "message" => "Document not found."]);
   }
 
+  // Prevent deletion if already approved
   if (!in_array($doc["verification_status"], ["draft", "pending", "rejected", "resubmission_required"], true)) {
     auth_out(403, [
       "ok" => false,
@@ -42,21 +44,20 @@ try {
     ]);
   }
 
+  // ✅ Delete record only (no file unlink anymore)
   $del = $pdo->prepare("DELETE FROM police_station_documents WHERE id = ?");
   $del->execute([$documentId]);
-
-  $abs = __DIR__ . "/" . ltrim((string)$doc["file_path"], "/");
-  if (is_file($abs)) {
-    @unlink($abs);
-  }
 
   auth_out(200, [
     "ok" => true,
     "message" => "Document deleted successfully."
   ]);
+
 } catch (Throwable $e) {
+  // 🔥 VERY IMPORTANT for debugging
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage() // remove in production later
   ]);
 }
