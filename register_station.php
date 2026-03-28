@@ -1,11 +1,15 @@
 <?php
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
-
 require_once __DIR__ . "/require_admin_account.php";
 require_once __DIR__ . "/station_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
+
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
+  auth_out(405, [
+    "ok" => false,
+    "message" => "Method not allowed"
+  ]);
+}
 
 $data = station_json_input();
 
@@ -31,12 +35,18 @@ if (!empty($missing)) {
 
 $stationType = station_clean($data["station_type"] ?? "");
 if (!in_array($stationType, station_allowed_types(), true)) {
-  auth_out(400, ["ok" => false, "message" => "Invalid station type."]);
+  auth_out(400, [
+    "ok" => false,
+    "message" => "Invalid station type."
+  ]);
 }
 
 $coordError = station_validate_coordinates($data["lat"] ?? null, $data["lng"] ?? null);
 if ($coordError !== null) {
-  auth_out(400, ["ok" => false, "message" => $coordError]);
+  auth_out(400, [
+    "ok" => false,
+    "message" => $coordError
+  ]);
 }
 
 $stationName = station_clean($data["station_name"] ?? "");
@@ -49,7 +59,9 @@ $streetAddress = station_nullable_string($data["street_address"] ?? null);
 $fullAddress = station_clean($data["full_address"] ?? "");
 $lat = (float)$data["lat"];
 $lng = (float)$data["lng"];
-$accuracyM = isset($data["accuracy_m"]) && $data["accuracy_m"] !== "" ? (int)$data["accuracy_m"] : null;
+$accuracyM = isset($data["accuracy_m"]) && $data["accuracy_m"] !== ""
+  ? (int)$data["accuracy_m"]
+  : null;
 
 $contactPerson = station_clean($data["contact_person"] ?? "");
 $contactPosition = station_nullable_string($data["contact_position"] ?? null);
@@ -59,7 +71,31 @@ $contactEmail = station_nullable_string($data["contact_email"] ?? null);
 $operatingHours = station_nullable_string($data["operating_hours"] ?? null);
 $emergencyContact = station_nullable_string($data["emergency_contact"] ?? null);
 
-/* operating_hours JSON validation */
+/*
+|--------------------------------------------------------------------------
+| Optional contact email validation
+|--------------------------------------------------------------------------
+*/
+if ($contactEmail !== null && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
+  auth_out(400, [
+    "ok" => false,
+    "message" => "Invalid contact email format."
+  ]);
+}
+
+/*
+|--------------------------------------------------------------------------
+| operating_hours JSON validation
+|--------------------------------------------------------------------------
+| Expected shape:
+| {
+|   "is_24_7": true/false,
+|   "days": {
+|     "Monday": { "enabled": true/false, "open": "08:00", "close": "17:00" },
+|     ...
+|   }
+| }
+*/
 if ($operatingHours !== null) {
   $decodedOperatingHours = json_decode($operatingHours, true);
 
@@ -110,11 +146,14 @@ if ($operatingHours !== null) {
     }
 
     $enabled = (bool)($row["enabled"] ?? false);
-    $open = (string)($row["open"] ?? "");
-    $close = (string)($row["close"] ?? "");
+    $open = trim((string)($row["open"] ?? ""));
+    $close = trim((string)($row["close"] ?? ""));
 
     if (!$is24_7 && $enabled) {
-      if (!preg_match('/^\d{2}:\d{2}$/', $open) || !preg_match('/^\d{2}:\d{2}$/', $close)) {
+      if (
+        !preg_match('/^\d{2}:\d{2}$/', $open) ||
+        !preg_match('/^\d{2}:\d{2}$/', $close)
+      ) {
         auth_out(400, [
           "ok" => false,
           "message" => "Invalid open/close time format for {$day}."
@@ -137,7 +176,7 @@ try {
   | Default contact email to logged-in admin email if empty
   |--------------------------------------------------------------------------
   */
-  if (!$contactEmail) {
+  if ($contactEmail === null) {
     $userStmt = $pdo->prepare("
       SELECT email
       FROM users
@@ -147,17 +186,25 @@ try {
     $userStmt->execute([$AUTH_USER["id"]]);
     $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
 
-    $contactEmail = $userRow["email"] ?? null;
+    $contactEmail = isset($userRow["email"]) ? trim((string)$userRow["email"]) : null;
+    if ($contactEmail === "") {
+      $contactEmail = null;
+    }
   }
 
   if ($contactEmail !== null && !filter_var($contactEmail, FILTER_VALIDATE_EMAIL)) {
-    auth_out(400, ["ok" => false, "message" => "Invalid contact email format."]);
+    auth_out(400, [
+      "ok" => false,
+      "message" => "Invalid contact email format."
+    ]);
   }
 
   $pdo->beginTransaction();
 
   $existingStmt = $pdo->prepare("
-    SELECT id, verification_status
+    SELECT
+      id,
+      verification_status
     FROM police_stations
     WHERE created_by = ?
     LIMIT 1
@@ -167,7 +214,7 @@ try {
 
   if ($existing) {
     $stationId = (int)$existing["id"];
-    $status = $existing["verification_status"];
+    $status = (string)($existing["verification_status"] ?? "");
 
     if (!in_array($status, station_can_edit_statuses(), true)) {
       $pdo->rollBack();
@@ -187,7 +234,8 @@ try {
       LIMIT 1
     ");
     $dupStmt->execute([$stationName, $cityMunicipality, $stationId]);
-    if ($dupStmt->fetch()) {
+
+    if ($dupStmt->fetch(PDO::FETCH_ASSOC)) {
       $pdo->rollBack();
       auth_out(409, [
         "ok" => false,
@@ -198,8 +246,8 @@ try {
     $upd = $pdo->prepare("
       UPDATE police_stations
       SET
-        station_type = ?,
         station_name = ?,
+        station_type = ?,
         region = ?,
         province = ?,
         city_municipality = ?,
@@ -217,19 +265,35 @@ try {
         contact_email = ?,
         operating_hours = ?,
         emergency_contact = ?,
+        reviewed_at = CASE
+          WHEN verification_status IN ('rejected', 'resubmission_required') THEN NULL
+          ELSE reviewed_at
+        END,
+        reviewed_by = CASE
+          WHEN verification_status IN ('rejected', 'resubmission_required') THEN NULL
+          ELSE reviewed_by
+        END,
         rejection_reason = CASE
-          WHEN verification_status IN ('rejected','resubmission_required') THEN NULL
+          WHEN verification_status IN ('rejected', 'resubmission_required') THEN NULL
           ELSE rejection_reason
         END,
+        approved_at = CASE
+          WHEN verification_status IN ('rejected', 'resubmission_required') THEN NULL
+          ELSE approved_at
+        END,
+        submitted_at = CASE
+          WHEN verification_status IN ('rejected', 'resubmission_required') THEN NULL
+          ELSE submitted_at
+        END,
         verification_status = CASE
-          WHEN verification_status IN ('rejected','resubmission_required') THEN 'draft'
+          WHEN verification_status IN ('rejected', 'resubmission_required') THEN 'draft'
           ELSE verification_status
         END
       WHERE id = ?
     ");
     $upd->execute([
-      $stationType,
       $stationName,
+      $stationType,
       $region,
       $province,
       $cityMunicipality,
@@ -267,7 +331,8 @@ try {
     LIMIT 1
   ");
   $dupStmt->execute([$stationName, $cityMunicipality]);
-  if ($dupStmt->fetch()) {
+
+  if ($dupStmt->fetch(PDO::FETCH_ASSOC)) {
     $pdo->rollBack();
     auth_out(409, [
       "ok" => false,
@@ -334,10 +399,16 @@ try {
 
   $linkUser = $pdo->prepare("
     UPDATE users
-    SET station_id = ?, account_status = 'pending', valid = 'unvalid'
+    SET
+      station_id = ?,
+      account_status = 'pending',
+      valid = 'unvalid'
     WHERE id = ?
   ");
-  $linkUser->execute([$stationId, $AUTH_USER["id"]]);
+  $linkUser->execute([
+    $stationId,
+    $AUTH_USER["id"]
+  ]);
 
   $pdo->commit();
 
@@ -347,12 +418,13 @@ try {
     "station_id" => $stationId
   ]);
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
 
   auth_out(500, [
     "ok" => false,
-    "message" => $e->getMessage(),
-    "line" => $e->getLine(),
-    "file" => $e->getFile()
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }

@@ -17,10 +17,14 @@ function station_nullable_string($value): ?string {
 
 function station_require_fields(array $data, array $required): array {
   $missing = [];
+
   foreach ($required as $field) {
     $value = isset($data[$field]) ? trim((string)$data[$field]) : "";
-    if ($value === "") $missing[] = $field;
+    if ($value === "") {
+      $missing[] = $field;
+    }
   }
+
   return $missing;
 }
 
@@ -60,18 +64,43 @@ function station_allowed_types(): array {
 
 function station_required_document_types(): array {
   return [
-    "proof_of_assignment",
-    "id_card",
-    "office_photo"
+    "pnp_certification",
+    "lgu_endorsement",
+    "location_proof",
+    "station_photo",
+    "commander_designation"
   ];
+}
+
+function station_optional_document_types(): array {
+  return [
+    "id_card",
+    "official_letter",
+    "other"
+  ];
+}
+
+function station_all_document_types(): array {
+  return array_merge(
+    station_required_document_types(),
+    station_optional_document_types()
+  );
 }
 
 function station_can_edit_statuses(): array {
   return [
     "draft",
-    "pending",
     "rejected",
     "resubmission_required"
+  ];
+}
+
+function station_can_submit_statuses(): array {
+  return [
+    "draft",
+    "rejected",
+    "resubmission_required",
+    "pending"
   ];
 }
 

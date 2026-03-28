@@ -3,6 +3,13 @@ require_once __DIR__ . "/require_admin_account.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+if ($_SERVER["REQUEST_METHOD"] !== "GET") {
+  auth_out(405, [
+    "ok" => false,
+    "message" => "Method not allowed"
+  ]);
+}
+
 try {
   $stmt = $pdo->prepare("
     SELECT
@@ -31,6 +38,7 @@ try {
       ps.is_active,
       ps.submitted_at,
       ps.reviewed_at,
+      ps.reviewed_by,
       ps.rejection_reason,
       ps.approved_at,
       ps.created_at,
@@ -63,8 +71,8 @@ try {
       "sitio" => $row["sitio"],
       "street_address" => $row["street_address"],
       "full_address" => $row["full_address"],
-      "lat" => (float)$row["lat"],
-      "lng" => (float)$row["lng"],
+      "lat" => $row["lat"] !== null ? (float)$row["lat"] : null,
+      "lng" => $row["lng"] !== null ? (float)$row["lng"] : null,
       "accuracy_m" => $row["accuracy_m"] !== null ? (int)$row["accuracy_m"] : null,
       "contact_person" => $row["contact_person"],
       "contact_position" => $row["contact_position"],
@@ -77,6 +85,7 @@ try {
       "is_active" => (int)$row["is_active"],
       "submitted_at" => $row["submitted_at"],
       "reviewed_at" => $row["reviewed_at"],
+      "reviewed_by" => $row["reviewed_by"] !== null ? (int)$row["reviewed_by"] : null,
       "rejection_reason" => $row["rejection_reason"],
       "approved_at" => $row["approved_at"],
       "created_at" => $row["created_at"],
@@ -86,6 +95,7 @@ try {
 } catch (Throwable $e) {
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }

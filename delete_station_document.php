@@ -1,5 +1,6 @@
-<?php 
+<?php
 require_once __DIR__ . "/require_admin_account.php";
+require_once __DIR__ . "/station_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -7,9 +8,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST" && $_SERVER["REQUEST_METHOD"] !== "DEL
   auth_out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
-$raw = file_get_contents("php://input");
-$data = json_decode($raw, true);
-
+$data = station_json_input();
 $documentId = (int)($data["document_id"] ?? $_GET["document_id"] ?? 0);
 
 if ($documentId <= 0) {
@@ -17,14 +16,13 @@ if ($documentId <= 0) {
 }
 
 try {
-  // ✅ FIX: removed file_path (BLOB system)
   $stmt = $pdo->prepare("
     SELECT
       d.id,
-      ps.id AS station_id,
+      d.station_id,
       ps.verification_status
     FROM police_station_documents d
-    JOIN police_stations ps ON ps.id = d.station_id
+    INNER JOIN police_stations ps ON ps.id = d.station_id
     WHERE d.id = ?
       AND ps.created_by = ?
     LIMIT 1
@@ -36,28 +34,34 @@ try {
     auth_out(404, ["ok" => false, "message" => "Document not found."]);
   }
 
-  // Prevent deletion if already approved
-  if (!in_array($doc["verification_status"], ["draft", "pending", "rejected", "resubmission_required"], true)) {
+  $status = (string)($doc["verification_status"] ?? "");
+
+  if (!in_array($status, station_can_edit_statuses(), true)) {
     auth_out(403, [
       "ok" => false,
       "message" => "Document cannot be deleted in the current station status."
     ]);
   }
 
-  // ✅ Delete record only (no file unlink anymore)
-  $del = $pdo->prepare("DELETE FROM police_station_documents WHERE id = ?");
-  $del->execute([$documentId]);
+  $del = $pdo->prepare("
+    DELETE FROM police_station_documents
+    WHERE id = ?
+      AND station_id = ?
+    LIMIT 1
+  ");
+  $del->execute([
+    $documentId,
+    (int)$doc["station_id"]
+  ]);
 
   auth_out(200, [
     "ok" => true,
     "message" => "Document deleted successfully."
   ]);
-
 } catch (Throwable $e) {
-  // 🔥 VERY IMPORTANT for debugging
   auth_out(500, [
     "ok" => false,
     "message" => "Server error.",
-    "error" => $e->getMessage() // remove in production later
+    "error" => $e->getMessage()
   ]);
 }

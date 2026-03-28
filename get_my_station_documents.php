@@ -3,6 +3,10 @@ require_once __DIR__ . "/require_admin_account.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+if ($_SERVER["REQUEST_METHOD"] !== "GET") {
+  auth_out(405, ["ok" => false, "message" => "Method not allowed"]);
+}
+
 try {
   $stationStmt = $pdo->prepare("
     SELECT id
@@ -25,15 +29,18 @@ try {
   $stmt = $pdo->prepare("
     SELECT
       id,
+      station_id,
       document_type,
       document_label,
       file_name,
       file_ext,
       mime_type,
       file_size,
+      sha256,
       remarks,
       is_required,
       is_current,
+      uploaded_by,
       uploaded_at
     FROM police_station_documents
     WHERE station_id = ?
@@ -45,17 +52,21 @@ try {
   while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     $items[] = [
       "id" => (int)$row["id"],
+      "station_id" => (int)$row["station_id"],
       "document_type" => $row["document_type"],
       "document_label" => $row["document_label"],
       "file_name" => $row["file_name"],
       "file_ext" => $row["file_ext"],
       "mime_type" => $row["mime_type"],
-      "file_size" => (int)$row["file_size"],
-      "download_url" => "/api/get_station_document.php?id=" . $row["id"],
+      "file_size" => isset($row["file_size"]) ? (int)$row["file_size"] : 0,
+      "sha256" => $row["sha256"],
       "remarks" => $row["remarks"],
       "is_required" => (int)$row["is_required"],
       "is_current" => (int)$row["is_current"],
-      "uploaded_at" => $row["uploaded_at"]
+      "uploaded_by" => (int)$row["uploaded_by"],
+      "uploaded_at" => $row["uploaded_at"],
+      "created_at" => $row["uploaded_at"],
+      "download_url" => "/api/get_station_document_file.php?id=" . (int)$row["id"]
     ];
   }
 
@@ -66,6 +77,7 @@ try {
 } catch (Throwable $e) {
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }

@@ -16,11 +16,22 @@ try {
       verification_status,
       station_type,
       region,
+      province,
       city_municipality,
+      barangay,
+      sitio,
+      street_address,
       full_address,
       lat,
       lng,
-      contact_person
+      accuracy_m,
+      contact_person,
+      contact_position,
+      contact_mobile,
+      contact_landline,
+      contact_email,
+      operating_hours,
+      emergency_contact
     FROM police_stations
     WHERE created_by = ?
     LIMIT 1
@@ -33,9 +44,9 @@ try {
   }
 
   $stationId = (int)$station["id"];
-  $status = $station["verification_status"];
+  $status = (string)($station["verification_status"] ?? "");
 
-  if (!in_array($status, ["draft", "rejected", "resubmission_required", "pending"], true)) {
+  if (!in_array($status, station_can_submit_statuses(), true)) {
     auth_out(403, [
       "ok" => false,
       "message" => "This station cannot be submitted in its current status.",
@@ -44,11 +55,25 @@ try {
   }
 
   $missingStationFields = [];
-  foreach (["station_name", "station_type", "region", "city_municipality", "full_address", "contact_person"] as $f) {
-    if (trim((string)($station[$f] ?? "")) === "") $missingStationFields[] = $f;
+
+  $requiredFields = [
+    "station_name",
+    "station_type",
+    "region",
+    "city_municipality",
+    "full_address",
+    "contact_person",
+    "operating_hours"
+  ];
+
+  foreach ($requiredFields as $field) {
+    if (trim((string)($station[$field] ?? "")) === "") {
+      $missingStationFields[] = $field;
+    }
   }
 
-  if ($station["lat"] === null || $station["lng"] === null) {
+  $coordError = station_validate_coordinates($station["lat"] ?? null, $station["lng"] ?? null);
+  if ($coordError !== null) {
     $missingStationFields[] = "lat";
     $missingStationFields[] = "lng";
   }
@@ -56,16 +81,18 @@ try {
   $requiredDocs = station_required_document_types();
 
   $docStmt = $pdo->prepare("
-    SELECT document_type
+    SELECT DISTINCT document_type
     FROM police_station_documents
     WHERE station_id = ?
-      AND is_current = 1
   ");
   $docStmt->execute([$stationId]);
 
   $present = [];
   while ($row = $docStmt->fetch(PDO::FETCH_ASSOC)) {
-    $present[] = $row["document_type"];
+    $docType = trim((string)($row["document_type"] ?? ""));
+    if ($docType !== "") {
+      $present[] = $docType;
+    }
   }
 
   $missingDocs = array_values(array_diff($requiredDocs, array_unique($present)));
@@ -129,9 +156,13 @@ try {
     "verification_status" => "pending"
   ]);
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
+
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }

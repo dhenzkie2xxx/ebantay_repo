@@ -12,15 +12,7 @@ $documentType = station_clean($_POST["document_type"] ?? "");
 $documentLabel = station_nullable_string($_POST["document_label"] ?? null);
 $remarks = station_nullable_string($_POST["remarks"] ?? null);
 
-$allowedTypes = [
-  "station_clearance",
-  "proof_of_assignment",
-  "office_photo",
-  "id_card",
-  "official_letter",
-  "business_permit",
-  "other"
-];
+$allowedTypes = station_all_document_types();
 
 if (!in_array($documentType, $allowedTypes, true)) {
   auth_out(400, ["ok" => false, "message" => "Invalid document type."]);
@@ -31,13 +23,18 @@ if (!isset($_FILES["file"])) {
 }
 
 $file = $_FILES["file"];
-if ($file["error"] !== UPLOAD_ERR_OK) {
+
+if (!isset($file["error"]) || $file["error"] !== UPLOAD_ERR_OK) {
   auth_out(400, ["ok" => false, "message" => "Upload failed."]);
 }
 
-$maxBytes = 10 * 1024 * 1024;
-if ($file["size"] <= 0 || $file["size"] > $maxBytes) {
+$maxBytes = 10 * 1024 * 1024; // 10MB
+if (!isset($file["size"]) || $file["size"] <= 0 || $file["size"] > $maxBytes) {
   auth_out(400, ["ok" => false, "message" => "Max 10MB allowed."]);
+}
+
+if (!is_uploaded_file($file["tmp_name"])) {
+  auth_out(400, ["ok" => false, "message" => "Invalid uploaded file."]);
 }
 
 $finfo = new finfo(FILEINFO_MIME_TYPE);
@@ -54,40 +51,37 @@ if (!isset($allowedMime[$mime])) {
 }
 
 $fileData = file_get_contents($file["tmp_name"]);
+if ($fileData === false) {
+  auth_out(400, ["ok" => false, "message" => "Failed to read uploaded file."]);
+}
+
 $fileExt = $allowedMime[$mime];
 $sha256 = hash("sha256", $fileData);
 
-$stationStmt = $pdo->prepare("
-  SELECT id, verification_status
-  FROM police_stations
-  WHERE created_by = ?
-  LIMIT 1
-");
-$stationStmt->execute([$AUTH_USER["id"]]);
-$station = $stationStmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$station) {
-  auth_out(400, ["ok" => false, "message" => "Register station first."]);
-}
-
-$stationId = (int)$station["id"];
-$status = $station["verification_status"];
-
-if (!in_array($status, station_can_edit_statuses(), true)) {
-  auth_out(403, ["ok" => false, "message" => "Cannot upload in current status"]);
-}
-
-$isRequired = in_array($documentType, station_required_document_types(), true) ? 1 : 0;
-
 try {
-  $pdo->beginTransaction();
+  $stationStmt = $pdo->prepare("
+    SELECT
+      id,
+      verification_status
+    FROM police_stations
+    WHERE created_by = ?
+    LIMIT 1
+  ");
+  $stationStmt->execute([$AUTH_USER["id"]]);
+  $station = $stationStmt->fetch(PDO::FETCH_ASSOC);
 
-  // deactivate old version
-  $pdo->prepare("
-    UPDATE police_station_documents
-    SET is_current = 0
-    WHERE station_id = ? AND document_type = ?
-  ")->execute([$stationId, $documentType]);
+  if (!$station) {
+    auth_out(400, ["ok" => false, "message" => "Register station first."]);
+  }
+
+  $stationId = (int)$station["id"];
+  $status = (string)($station["verification_status"] ?? "");
+
+  if (!in_array($status, station_can_edit_statuses(), true)) {
+    auth_out(403, ["ok" => false, "message" => "Cannot upload in current status."]);
+  }
+
+  $isRequired = in_array($documentType, station_required_document_types(), true) ? 1 : 0;
 
   $stmt = $pdo->prepare("
     INSERT INTO police_station_documents (
@@ -95,16 +89,17 @@ try {
       document_type,
       document_label,
       file_name,
-      file_ext,
       mime_type,
       file_size,
-      file_data,
       sha256,
       remarks,
       is_required,
       is_current,
-      uploaded_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      uploaded_by,
+      uploaded_at,
+      file_data,
+      file_ext
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), ?, ?)
   ");
 
   $stmt->execute([
@@ -112,24 +107,24 @@ try {
     $documentType,
     $documentLabel,
     $file["name"],
-    $fileExt,
     $mime,
-    $file["size"],
-    $fileData,
+    (int)$file["size"],
     $sha256,
     $remarks,
     $isRequired,
-    $AUTH_USER["id"]
+    $AUTH_USER["id"],
+    $fileData,
+    $fileExt
   ]);
-
-  $pdo->commit();
 
   auth_out(200, [
     "ok" => true,
-    "message" => "Uploaded successfully"
+    "message" => "Uploaded successfully."
   ]);
-
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
-  auth_out(500, ["ok" => false, "message" => "Server error"]);
+  auth_out(500, [
+    "ok" => false,
+    "message" => "Server error.",
+    "error" => $e->getMessage()
+  ]);
 }
