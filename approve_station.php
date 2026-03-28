@@ -8,8 +8,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   auth_out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
-$raw = file_get_contents("php://input");
-$data = json_decode($raw, true);
+$data = json_decode(file_get_contents("php://input"), true);
 
 $stationId = (int)($data["station_id"] ?? 0);
 $remarks = station_nullable_string($data["remarks"] ?? null);
@@ -37,15 +36,15 @@ try {
   }
 
   $oldStatus = $station["verification_status"];
+
   if ($oldStatus === "approved") {
     auth_out(400, ["ok" => false, "message" => "Station is already approved."]);
   }
 
   $docStmt = $pdo->prepare("
-    SELECT document_type
+    SELECT DISTINCT document_type
     FROM police_station_documents
     WHERE station_id = ?
-      AND is_current = 1
   ");
   $docStmt->execute([$stationId]);
 
@@ -118,8 +117,10 @@ try {
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();
+
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }

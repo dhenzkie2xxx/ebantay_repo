@@ -3,6 +3,10 @@ require_once __DIR__ . "/require_super_admin.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+if ($_SERVER["REQUEST_METHOD"] !== "GET") {
+  auth_out(405, ["ok" => false, "message" => "Method not allowed"]);
+}
+
 $stationId = (int)($_GET["station_id"] ?? 0);
 if ($stationId <= 0) {
   auth_out(400, ["ok" => false, "message" => "Invalid station ID."]);
@@ -47,7 +51,6 @@ try {
       uploaded_at
     FROM police_station_documents
     WHERE station_id = ?
-      AND is_current = 1
     ORDER BY uploaded_at DESC, id DESC
   ");
   $docStmt->execute([$stationId]);
@@ -66,6 +69,7 @@ try {
       "is_required" => (int)$row["is_required"],
       "is_current" => (int)$row["is_current"],
       "uploaded_at" => $row["uploaded_at"],
+      "created_at" => $row["uploaded_at"],
       "download_url" => "/api/get_station_document_file.php?id=" . $row["id"]
     ];
   }
@@ -149,6 +153,7 @@ try {
 } catch (Throwable $e) {
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }

@@ -3,6 +3,10 @@ require_once __DIR__ . "/require_super_admin.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+if ($_SERVER["REQUEST_METHOD"] !== "GET") {
+  auth_out(405, ["ok" => false, "message" => "Method not allowed"]);
+}
+
 $status = trim((string)($_GET["status"] ?? ""));
 $keyword = trim((string)($_GET["keyword"] ?? ""));
 $limit = (int)($_GET["limit"] ?? 20);
@@ -48,10 +52,7 @@ if ($keyword !== "") {
   }
 }
 
-$whereSql = "";
-if ($where) {
-  $whereSql = "WHERE " . implode(" AND ", $where);
-}
+$whereSql = $where ? "WHERE " . implode(" AND ", $where) : "";
 
 $sql = "
   SELECT
@@ -81,7 +82,6 @@ $sql = "
       SELECT COUNT(*)
       FROM police_station_documents d
       WHERE d.station_id = ps.id
-        AND d.is_current = 1
     ) AS document_count
   FROM police_stations ps
   JOIN users u ON u.id = ps.created_by
@@ -143,6 +143,7 @@ try {
 } catch (Throwable $e) {
   auth_out(500, [
     "ok" => false,
-    "message" => "Server error. Please try again later."
+    "message" => "Server error.",
+    "error" => $e->getMessage()
   ]);
 }
