@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -11,6 +12,11 @@ function out($code, $payload) {
 
 function normalize_text($value) {
   return trim((string)($value ?? ""));
+}
+
+function normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
 }
 
 function parse_datetime_to_sql($value) {
@@ -46,6 +52,94 @@ function haversineMeters($lat1, $lng1, $lat2, $lng2) {
   return 2 * $earth * asin(min(1, sqrt($a)));
 }
 
+function reverse_geocode_scope(float $lat, float $lng): array {
+  $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
+    . urlencode((string)$lat)
+    . "&lon="
+    . urlencode((string)$lng);
+
+  $opts = [
+    "http" => [
+      "method" => "GET",
+      "header" =>
+        "User-Agent: eBantay/1.0\r\n" .
+        "Accept: application/json\r\n",
+      "timeout" => 15
+    ]
+  ];
+
+  $context = stream_context_create($opts);
+  $raw = @file_get_contents($url, false, $context);
+  if ($raw === false) {
+    return [
+      "ok" => false,
+      "message" => "Reverse geocoding service unavailable"
+    ];
+  }
+
+  $json = json_decode($raw, true);
+  if (!is_array($json)) {
+    return [
+      "ok" => false,
+      "message" => "Invalid geocoding response"
+    ];
+  }
+
+  $addr = $json["address"] ?? [];
+
+  $barangay = $addr["suburb"]
+    ?? $addr["village"]
+    ?? $addr["hamlet"]
+    ?? $addr["neighbourhood"]
+    ?? $addr["quarter"]
+    ?? $addr["city_district"]
+    ?? "";
+
+  $cityMunicipality = $addr["city"]
+    ?? $addr["municipality"]
+    ?? $addr["town"]
+    ?? "";
+
+  $state = trim((string)($addr["state"] ?? ""));
+  $region = $addr["region"]
+    ?? $addr["state_district"]
+    ?? "";
+
+  $province = $addr["province"]
+    ?? $addr["county"]
+    ?? "";
+
+  if ($province === "" && $state !== "") {
+    $stateLower = strtolower($state);
+    $looksLikeRegion =
+      str_contains($stateLower, "region") ||
+      str_contains($stateLower, "national capital region") ||
+      $stateLower === "ncr" ||
+      str_contains($stateLower, "metro manila");
+
+    if ($looksLikeRegion) {
+      if ($region === "") $region = $state;
+    } else {
+      $province = $state;
+    }
+  }
+
+  $road = $addr["road"] ?? "";
+  $displayName = $json["display_name"] ?? "";
+
+  return [
+    "ok" => true,
+    "address" => [
+      "barangay" => normalize_scope_value($barangay),
+      "city_municipality" => normalize_scope_value($cityMunicipality),
+      "province" => normalize_scope_value($province),
+      "region" => normalize_scope_value($region),
+      "place_of_incident" => normalize_scope_value($road),
+      "display_name" => normalize_scope_value($displayName)
+    ]
+  ];
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
@@ -61,12 +155,12 @@ $crimeTypeIdRaw   = $_POST["crime_type_id"] ?? null;
 $incidentTypeRaw  = normalize_text($_POST["incident_type"] ?? "");
 $narrative        = normalize_text($_POST["narrative"] ?? "");
 
-$placeOfIncident  = normalize_text($_POST["place_of_incident"] ?? "");
-$sitio            = normalize_text($_POST["sitio"] ?? "");
-$barangay         = normalize_text($_POST["barangay"] ?? "");
-$cityMunicipality = normalize_text($_POST["city_municipality"] ?? "");
-$province         = normalize_text($_POST["province"] ?? "");
-$region           = normalize_text($_POST["region"] ?? "");
+$placeOfIncidentClient  = normalize_text($_POST["place_of_incident"] ?? "");
+$sitioClient            = normalize_text($_POST["sitio"] ?? "");
+$barangayClient         = normalize_text($_POST["barangay"] ?? "");
+$cityMunicipalityClient = normalize_text($_POST["city_municipality"] ?? "");
+$provinceClient         = normalize_text($_POST["province"] ?? "");
+$regionClient           = normalize_text($_POST["region"] ?? "");
 
 $lat              = $_POST["lat"] ?? null;
 $lng              = $_POST["lng"] ?? null;
@@ -83,9 +177,6 @@ $clientRiskRadiusM   = $_POST["risk_radius_m"] ?? 250;
 if (
   $token === "" ||
   $narrative === "" ||
-  $barangay === "" ||
-  $cityMunicipality === "" ||
-  $province === "" ||
   $lat === null ||
   $lng === null
 ) {
@@ -127,14 +218,7 @@ try {
   | AUTH USER
   |--------------------------------------------------------------------------
   */
-  $q = $pdo->prepare("
-    SELECT id, firstname, lastname, email, api_token_expires, valid
-    FROM users
-    WHERE api_token = ?
-    LIMIT 1
-  ");
-  $q->execute([$token]);
-  $user = $q->fetch(PDO::FETCH_ASSOC);
+  $user = auth_get_user_by_token($pdo, $token);
 
   if (!$user) {
     out(401, ["ok" => false, "message" => "Unauthorized"]);
@@ -147,9 +231,46 @@ try {
     ]);
   }
 
-  $exp = !empty($user["api_token_expires"]) ? strtotime($user["api_token_expires"]) : 0;
-  if ($exp > 0 && time() > $exp) {
+  if (auth_check_token_expired($user)) {
     out(401, ["ok" => false, "message" => "Token expired"]);
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | RESOLVE SERVER-SIDE LOCATION SCOPE
+  |--------------------------------------------------------------------------
+  */
+  $geo = reverse_geocode_scope($lat, $lng);
+
+  $barangay = null;
+  $cityMunicipality = null;
+  $province = null;
+  $region = null;
+  $placeOfIncident = null;
+  $scopeSource = "client_fallback";
+
+  if ($geo["ok"]) {
+    $addr = $geo["address"];
+    $barangay = $addr["barangay"] ?? null;
+    $cityMunicipality = $addr["city_municipality"] ?? null;
+    $province = $addr["province"] ?? null;
+    $region = $addr["region"] ?? null;
+    $placeOfIncident = $addr["place_of_incident"] ?? null;
+    $scopeSource = "reverse_geocode";
+  }
+
+  if (!$barangay) $barangay = normalize_scope_value($barangayClient);
+  if (!$cityMunicipality) $cityMunicipality = normalize_scope_value($cityMunicipalityClient);
+  if (!$province) $province = normalize_scope_value($provinceClient);
+  if (!$region) $region = normalize_scope_value($regionClient);
+  if (!$placeOfIncident) $placeOfIncident = normalize_scope_value($placeOfIncidentClient);
+  $sitio = normalize_scope_value($sitioClient);
+
+  if (!$barangay || !$cityMunicipality || !$province) {
+    out(422, [
+      "ok" => false,
+      "message" => "Unable to determine complete incident location scope"
+    ]);
   }
 
   /*
@@ -312,12 +433,12 @@ try {
     $dateReportedSql,
     $dateIncidentFromSql,
     $dateIncidentToSql,
-    ($placeOfIncident !== "" ? $placeOfIncident : null),
-    ($sitio !== "" ? $sitio : null),
+    $placeOfIncident,
+    $sitio,
     $barangay,
     $cityMunicipality,
     $province,
-    ($region !== "" ? $region : null),
+    $region,
     $lat,
     $lng,
     $accuracy,
@@ -501,7 +622,15 @@ try {
     "risk_status" => $riskStatus,
     "risk_distance_m" => $riskDistanceM,
     "risk_radius_m" => $riskRadiusM,
-    "is_hotspot_related" => $isHotspotRelated
+    "is_hotspot_related" => $isHotspotRelated,
+    "scope" => [
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+      "barangay" => $barangay,
+      "place_of_incident" => $placeOfIncident,
+      "scope_source" => $scopeSource
+    ]
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) {

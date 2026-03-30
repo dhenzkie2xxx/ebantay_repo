@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -7,6 +8,168 @@ function out($code, $payload) {
   http_response_code($code);
   echo json_encode($payload);
   exit;
+}
+
+function normalize_text($value): string {
+  return trim((string)($value ?? ""));
+}
+
+function normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
+}
+
+function parse_device_time_to_sql($value): ?string {
+  $value = trim((string)$value);
+  if ($value === "") return null;
+
+  $ts = strtotime($value);
+  if ($ts === false) return null;
+
+  return date("Y-m-d H:i:s", $ts);
+}
+
+function haversineMeters($lat1, $lng1, $lat2, $lng2): float {
+  $earth = 6371000;
+  $dLat = deg2rad($lat2 - $lat1);
+  $dLng = deg2rad($lng2 - $lng1);
+
+  $a = sin($dLat / 2) * sin($dLat / 2)
+     + cos(deg2rad($lat1)) * cos(deg2rad($lat2))
+     * sin($dLng / 2) * sin($dLng / 2);
+
+  return 2 * $earth * asin(min(1, sqrt($a)));
+}
+
+function reverse_geocode_scope(float $lat, float $lng): array {
+  $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
+    . urlencode((string)$lat)
+    . "&lon="
+    . urlencode((string)$lng);
+
+  $opts = [
+    "http" => [
+      "method" => "GET",
+      "header" =>
+        "User-Agent: eBantay/1.0\r\n" .
+        "Accept: application/json\r\n",
+      "timeout" => 15
+    ]
+  ];
+
+  $context = stream_context_create($opts);
+  $raw = @file_get_contents($url, false, $context);
+  if ($raw === false) {
+    return [
+      "ok" => false,
+      "message" => "Reverse geocoding service unavailable"
+    ];
+  }
+
+  $json = json_decode($raw, true);
+  if (!is_array($json)) {
+    return [
+      "ok" => false,
+      "message" => "Invalid geocoding response"
+    ];
+  }
+
+  $addr = $json["address"] ?? [];
+
+  $barangay = $addr["suburb"]
+    ?? $addr["village"]
+    ?? $addr["hamlet"]
+    ?? $addr["neighbourhood"]
+    ?? $addr["quarter"]
+    ?? $addr["city_district"]
+    ?? "";
+
+  $cityMunicipality = $addr["city"]
+    ?? $addr["municipality"]
+    ?? $addr["town"]
+    ?? "";
+
+  $state = trim((string)($addr["state"] ?? ""));
+  $region = $addr["region"]
+    ?? $addr["state_district"]
+    ?? "";
+
+  $province = $addr["province"]
+    ?? $addr["county"]
+    ?? "";
+
+  if ($province === "" && $state !== "") {
+    $stateLower = strtolower($state);
+    $looksLikeRegion =
+      str_contains($stateLower, "region") ||
+      str_contains($stateLower, "national capital region") ||
+      $stateLower === "ncr" ||
+      str_contains($stateLower, "metro manila");
+
+    if ($looksLikeRegion) {
+      if ($region === "") $region = $state;
+    } else {
+      $province = $state;
+    }
+  }
+
+  $road = $addr["road"] ?? "";
+  $displayName = $json["display_name"] ?? "";
+
+  return [
+    "ok" => true,
+    "address" => [
+      "barangay" => normalize_scope_value($barangay),
+      "city_municipality" => normalize_scope_value($cityMunicipality),
+      "province" => normalize_scope_value($province),
+      "region" => normalize_scope_value($region),
+      "place_of_incident" => normalize_scope_value($road),
+      "display_name" => normalize_scope_value($displayName)
+    ]
+  ];
+}
+
+function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
+  if (!$province) return null;
+
+  $stmt = $pdo->prepare("
+    SELECT
+      id,
+      station_name,
+      station_code,
+      station_type,
+      region,
+      province,
+      city_municipality,
+      barangay,
+      full_address,
+      lat,
+      lng
+    FROM police_stations
+    WHERE verification_status = 'approved'
+      AND is_active = 1
+      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+  ");
+  $stmt->execute([$province]);
+  $stations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+  if (!$stations) return null;
+
+  $nearest = null;
+  $nearestDistance = null;
+
+  foreach ($stations as $station) {
+    $d = haversineMeters($lat, $lng, (float)$station["lat"], (float)$station["lng"]);
+    if ($nearestDistance === null || $d < $nearestDistance) {
+      $nearestDistance = $d;
+      $nearest = $station;
+    }
+  }
+
+  if (!$nearest) return null;
+
+  $nearest["distance_m"] = (int)round($nearestDistance);
+  return $nearest;
 }
 
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
@@ -20,12 +183,12 @@ if (!is_array($data)) {
   out(400, ["ok" => false, "message" => "Invalid JSON body"]);
 }
 
-$token = trim($data["token"] ?? "");
-$level = trim($data["level"] ?? "");
+$token = normalize_text($data["token"] ?? "");
+$level = normalize_text($data["level"] ?? "");
 $lat = $data["lat"] ?? null;
 $lng = $data["lng"] ?? null;
 $accuracy = $data["accuracy"] ?? null;
-$deviceTime = trim($data["device_time"] ?? ""); // optional ISO string
+$deviceTime = normalize_text($data["device_time"] ?? "");
 
 if ($token === "" || !in_array($level, ["alert", "urgent"], true) || $lat === null || $lng === null) {
   out(400, ["ok" => false, "message" => "Missing/invalid fields"]);
@@ -43,41 +206,61 @@ if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
 }
 
 try {
-  // Validate token + user
-  $q = $pdo->prepare("
-    SELECT id, api_token_expires, is_email_verified
-    FROM users
-    WHERE api_token = ?
-    LIMIT 1
-  ");
-  $q->execute([$token]);
-  $user = $q->fetch(PDO::FETCH_ASSOC);
+  $user = auth_get_user_by_token($pdo, $token);
+  if (!$user) {
+    out(401, ["ok" => false, "message" => "Unauthorized"]);
+  }
 
-  if (!$user) out(401, ["ok" => false, "message" => "Unauthorized"]);
-
-  $exp = !empty($user["api_token_expires"]) ? strtotime($user["api_token_expires"]) : 0;
-  if ($exp > 0 && time() > $exp) {
+  if (auth_check_token_expired($user)) {
     out(401, ["ok" => false, "message" => "Token expired"]);
   }
 
-  // Optional: block if email not verified (keeps consistent with login.php)
   if ((int)($user["is_email_verified"] ?? 0) !== 1) {
     out(403, ["ok" => false, "message" => "Email not verified"]);
   }
 
-  // Parse device_time safely (avoid 1970 issue)
-  $deviceTimeSql = null;
-  if ($deviceTime !== "") {
-    $ts = strtotime($deviceTime);
-    if ($ts !== false) {
-      $deviceTimeSql = date("Y-m-d H:i:s", $ts);
-    }
+  $deviceTimeSql = parse_device_time_to_sql($deviceTime);
+  $accuracySql = ($accuracy !== null && is_numeric($accuracy)) ? (int)round((float)$accuracy) : null;
+
+  $geo = reverse_geocode_scope($lat, $lng);
+  if (!$geo["ok"]) {
+    out(502, [
+      "ok" => false,
+      "message" => "Unable to resolve location scope for this panic request"
+    ]);
   }
 
-  // Insert panic request
+  $resolved = $geo["address"];
+  $region = $resolved["region"] ?? null;
+  $province = $resolved["province"] ?? null;
+  $cityMunicipality = $resolved["city_municipality"] ?? null;
+  $barangay = $resolved["barangay"] ?? null;
+
+  if (!$province) {
+    out(422, [
+      "ok" => false,
+      "message" => "Unable to determine the province from the current location"
+    ]);
+  }
+
+  $nearestStation = find_nearest_station_in_province($pdo, $lat, $lng, $province);
+  $assignedStationId = $nearestStation ? (int)$nearestStation["id"] : null;
+
   $stmt = $pdo->prepare("
-    INSERT INTO panic_requests (user_id, level, lat, lng, accuracy_m, device_time)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO panic_requests (
+      user_id,
+      level,
+      lat,
+      lng,
+      accuracy_m,
+      region,
+      province,
+      city_municipality,
+      barangay,
+      assigned_station_id,
+      device_time
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ");
 
   $stmt->execute([
@@ -85,7 +268,12 @@ try {
     $level,
     $lat,
     $lng,
-    ($accuracy !== null && is_numeric($accuracy)) ? (int)round((float)$accuracy) : null,
+    $accuracySql,
+    $region,
+    $province,
+    $cityMunicipality,
+    $barangay,
+    $assignedStationId,
     $deviceTimeSql
   ]);
 
@@ -93,9 +281,30 @@ try {
     "ok" => true,
     "message" => "Panic received",
     "id" => (int)$pdo->lastInsertId(),
-    "level" => $level
+    "level" => $level,
+    "scope" => [
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+      "barangay" => $barangay
+    ],
+    "assigned_station" => $nearestStation ? [
+      "id" => (int)$nearestStation["id"],
+      "station_name" => $nearestStation["station_name"],
+      "station_code" => $nearestStation["station_code"],
+      "station_type" => $nearestStation["station_type"],
+      "province" => $nearestStation["province"],
+      "city_municipality" => $nearestStation["city_municipality"],
+      "barangay" => $nearestStation["barangay"],
+      "full_address" => $nearestStation["full_address"],
+      "distance_m" => (int)$nearestStation["distance_m"]
+    ] : null
   ]);
 
 } catch (Throwable $e) {
-  out(500, ["ok" => false, "message" => "Server error"]);
+  out(500, [
+    "ok" => false,
+    "message" => "Server error",
+    "debug" => $e->getMessage()
+  ]);
 }
