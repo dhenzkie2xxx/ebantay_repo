@@ -12,35 +12,41 @@ function hotspot_distance_meters($lat1, $lng1, $lat2, $lng2) {
   return 2 * $earth * asin(min(1, sqrt($a)));
 }
 
-function compute_hotspot_color($incidentCount, $panicCount) {
+function hotspot_normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
+}
+
+function hotspot_compute_color($incidentCount, $panicCount) {
   if ($incidentCount >= 3 || $panicCount >= 1) return "red";
   if ($incidentCount >= 2) return "orange";
   if ($incidentCount >= 1) return "green";
   return "none";
 }
 
-function compute_hotspot_risk_level($color) {
+function hotspot_compute_risk_level($color) {
   if ($color === "red") return "HIGH";
   if ($color === "orange") return "MEDIUM";
   if ($color === "green") return "LOW";
   return "LOW";
 }
 
-function get_computed_hotspots(PDO $pdo, int $days = 30): array {
-  $days = max(1, min(365, $days));
-
-  $hotspotsStmt = $pdo->query("
+function hotspot_base_rows(PDO $pdo): array {
+  $stmt = $pdo->query("
     SELECT id, name, lat, lng, radius_m, hotspot_type, risk_level, last_detected_at, created_at
     FROM crime_hotspots
     WHERE active = 1
     ORDER BY id DESC
   ");
-  $hotspots = $hotspotsStmt->fetchAll(PDO::FETCH_ASSOC);
+  return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
-  $incidentStmt = $pdo->prepare("
+function hotspot_incident_rows(PDO $pdo, int $days = 30, ?string $provinceFilter = null): array {
+  $sql = "
     SELECT
       lat,
       lng,
+      province,
       date_reported
     FROM incident_reports
     WHERE
@@ -49,14 +55,25 @@ function get_computed_hotspots(PDO $pdo, int $days = 30): array {
       AND incident_phase <> 'REJECTED'
       AND verification_status = 'VERIFIED'
       AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
-  ");
-  $incidentStmt->execute([$days]);
-  $incidentRows = $incidentStmt->fetchAll(PDO::FETCH_ASSOC);
+  ";
+  $params = [$days];
 
-  $panicStmt = $pdo->prepare("
+  if ($provinceFilter !== null) {
+    $sql .= " AND LOWER(TRIM(province)) = LOWER(TRIM(?)) ";
+    $params[] = $provinceFilter;
+  }
+
+  $stmt = $pdo->prepare($sql);
+  $stmt->execute($params);
+  return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function hotspot_panic_rows(PDO $pdo, int $days = 30, ?string $provinceFilter = null): array {
+  $sql = "
     SELECT
       lat,
       lng,
+      province,
       level,
       created_at,
       status
@@ -66,9 +83,26 @@ function get_computed_hotspots(PDO $pdo, int $days = 30): array {
       AND lng IS NOT NULL
       AND status <> 'resolved'
       AND created_at >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
-  ");
-  $panicStmt->execute([$days]);
-  $panicRows = $panicStmt->fetchAll(PDO::FETCH_ASSOC);
+  ";
+  $params = [$days];
+
+  if ($provinceFilter !== null) {
+    $sql .= " AND LOWER(TRIM(province)) = LOWER(TRIM(?)) ";
+    $params[] = $provinceFilter;
+  }
+
+  $stmt = $pdo->prepare($sql);
+  $stmt->execute($params);
+  return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function get_computed_hotspots(PDO $pdo, int $days = 30, ?string $provinceFilter = null): array {
+  $days = max(1, min(365, $days));
+  $provinceFilter = hotspot_normalize_scope_value($provinceFilter);
+
+  $hotspots = hotspot_base_rows($pdo);
+  $incidentRows = hotspot_incident_rows($pdo, $days, $provinceFilter);
+  $panicRows = hotspot_panic_rows($pdo, $days, $provinceFilter);
 
   $out = [];
 
@@ -103,8 +137,12 @@ function get_computed_hotspots(PDO $pdo, int $days = 30): array {
       }
     }
 
-    $color = compute_hotspot_color($incidentCount, $panicCount);
-    $riskLevel = compute_hotspot_risk_level($color);
+    if ($provinceFilter !== null && $incidentCount === 0 && $panicCount === 0) {
+      continue;
+    }
+
+    $color = hotspot_compute_color($incidentCount, $panicCount);
+    $riskLevel = hotspot_compute_risk_level($color);
     $score = $incidentCount + $panicScore;
 
     $out[] = [
@@ -207,7 +245,7 @@ function hotspot_detect_context(PDO $pdo, float $lat, float $lng, ?int $excludeI
   }
 
   $panicStmt = $pdo->prepare("
-    SELECT id, level, lat, lng, created_at
+    SELECT id, level, lat, lng, created_at, province
     FROM panic_requests
     WHERE
       status <> 'resolved'
