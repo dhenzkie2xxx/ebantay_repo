@@ -38,9 +38,20 @@ try {
       u.station_id,
       u.account_status,
       u.rejected_reason,
+
       ps.station_name,
+      ps.station_code,
+      ps.station_type,
+      ps.region AS station_region,
+      ps.province AS station_province,
+      ps.city_municipality AS station_city_municipality,
+      ps.barangay AS station_barangay,
+      ps.full_address AS station_full_address,
+      ps.lat AS station_lat,
+      ps.lng AS station_lng,
       ps.verification_status AS station_verification_status,
       ps.is_active AS station_is_active
+
     FROM users u
     LEFT JOIN police_stations ps ON ps.id = u.station_id
     WHERE u.username = ?
@@ -88,45 +99,36 @@ try {
     }
   }
 
-  // citizen login remains normal
-  if ($user["role"] === "citizen") {
-    $token = bin2hex(random_bytes(32));
-    $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24 * 7);
-
-    $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
-    $upd->execute([$token, $expires, $user["id"]]);
-
-    echo json_encode([
-      "ok" => true,
-      "message" => "Login successful",
-      "token" => $token,
-      "token_expires" => $expires,
-      "onboarding_only" => false,
-      "user" => [
-        "id" => (int)$user["id"],
-        "lastname" => $user["lastname"],
-        "firstname" => $user["firstname"],
-        "email" => $user["email"],
-        "username" => $user["username"],
-        "role" => $user["role"]
-      ]
-    ]);
-    exit;
-  }
-
   $token = bin2hex(random_bytes(32));
   $expires = date("Y-m-d H:i:s", time() + 60 * 60 * 24 * 7);
 
   $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
   $upd->execute([$token, $expires, $user["id"]]);
 
-  // admin onboarding logic
+  if ($user["role"] === "citizen") {
+    echo json_encode([
+      "ok" => true,
+      "message" => "Login successful",
+      "token" => $token,
+      "token_expires" => $expires,
+      "onboarding_only" => false,
+      "user" => array_merge([
+        "id" => (int)$user["id"],
+        "lastname" => $user["lastname"],
+        "firstname" => $user["firstname"],
+        "email" => $user["email"],
+        "username" => $user["username"],
+        "role" => $user["role"]
+      ], auth_station_scope($user))
+    ]);
+    exit;
+  }
+
   if ($user["role"] === "admin") {
     $stationStatus = $user["station_verification_status"] ?? null;
     $stationActive = (int)($user["station_is_active"] ?? 0);
     $accountStatus = $user["account_status"] ?? "pending";
 
-    // hard block only disabled admin accounts
     if ($accountStatus === "disabled") {
       http_response_code(403);
       echo json_encode([
@@ -172,42 +174,35 @@ try {
       "token" => $token,
       "token_expires" => $expires,
       "onboarding_only" => $onboardingOnly,
-      "user" => [
+      "user" => array_merge([
         "id" => (int)$user["id"],
         "lastname" => $user["lastname"],
         "firstname" => $user["firstname"],
         "email" => $user["email"],
         "username" => $user["username"],
         "role" => $user["role"],
-        "station_id" => $user["station_id"] ? (int)$user["station_id"] : null,
-        "station_name" => $user["station_name"],
-        "station_verification_status" => $stationStatus,
         "account_status" => $accountStatus
-      ],
+      ], auth_station_scope($user)),
       "rejected_reason" => $user["rejected_reason"] ?? null
     ]);
     exit;
   }
 
-  // super admin normal login
   echo json_encode([
     "ok" => true,
     "message" => "Login successful",
     "token" => $token,
     "token_expires" => $expires,
     "onboarding_only" => false,
-    "user" => [
+    "user" => array_merge([
       "id" => (int)$user["id"],
       "lastname" => $user["lastname"],
       "firstname" => $user["firstname"],
       "email" => $user["email"],
       "username" => $user["username"],
       "role" => $user["role"],
-      "station_id" => $user["station_id"] ? (int)$user["station_id"] : null,
-      "station_name" => $user["station_name"],
-      "station_verification_status" => $user["station_verification_status"],
       "account_status" => $user["account_status"] ?? null
-    ]
+    ], auth_station_scope($user))
   ]);
 } catch (Throwable $e) {
   http_response_code(500);

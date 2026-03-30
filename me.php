@@ -4,11 +4,9 @@ require_once __DIR__ . "/auth_helpers.php";
 header("Content-Type: application/json; charset=UTF-8");
 
 function resolve_token_from_request(): string {
-  // 1) Try Bearer token first
   $token = bearer_token();
   if ($token !== "") return $token;
 
-  // 2) Fallback to JSON body token for legacy/mobile clients
   $raw = file_get_contents("php://input");
   if ($raw !== "") {
     $data = json_decode($raw, true);
@@ -41,16 +39,13 @@ if (auth_check_token_expired($user)) {
 
 auth_out(200, [
   "ok" => true,
-  "user" => [
+  "user" => array_merge([
     "id" => (int)$user["id"],
     "firstname" => $user["firstname"],
     "lastname" => $user["lastname"],
     "email" => $user["email"],
     "username" => $user["username"],
     "role" => $user["role"],
-    "station_id" => !empty($user["station_id"]) ? (int)$user["station_id"] : null,
-    "station_name" => $user["station_name"] ?? null,
-    "station_verification_status" => $user["station_verification_status"] ?? null,
     "account_status" => $user["account_status"] ?? null
-  ]
+  ], auth_station_scope($user))
 ]);

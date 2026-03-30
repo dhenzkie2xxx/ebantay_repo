@@ -24,9 +24,7 @@ if ($gate !== null) {
   auth_out($gate["code"], $gate["payload"]);
 }
 
-$AUTH_USER = [
+$AUTH_USER = array_merge([
   "id" => (int)$user["id"],
-  "role" => $user["role"],
-  "station_id" => !empty($user["station_id"]) ? (int)$user["station_id"] : null,
-  "station_name" => $user["station_name"] ?? null
-];
+  "role" => $user["role"]
+], auth_station_scope($user));

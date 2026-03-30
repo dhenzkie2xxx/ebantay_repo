@@ -47,9 +47,20 @@ function auth_get_user_by_token(PDO $pdo, string $token): ?array {
       u.approved_by,
       u.approved_at,
       u.rejected_reason,
+
       ps.station_name,
+      ps.station_code,
+      ps.station_type,
+      ps.region AS station_region,
+      ps.province AS station_province,
+      ps.city_municipality AS station_city_municipality,
+      ps.barangay AS station_barangay,
+      ps.full_address AS station_full_address,
+      ps.lat AS station_lat,
+      ps.lng AS station_lng,
       ps.verification_status AS station_verification_status,
       ps.is_active AS station_is_active
+
     FROM users u
     LEFT JOIN police_stations ps ON ps.id = u.station_id
     WHERE u.api_token = ?
@@ -174,5 +185,23 @@ function auth_admin_station_gate(array $user): ?array {
       "verification_status" => $stationStatus,
       "station_name" => $user["station_name"]
     ]
+  ];
+}
+
+function auth_station_scope(array $user): array {
+  return [
+    "station_id" => !empty($user["station_id"]) ? (int)$user["station_id"] : null,
+    "station_name" => $user["station_name"] ?? null,
+    "station_code" => $user["station_code"] ?? null,
+    "station_type" => $user["station_type"] ?? null,
+    "station_region" => $user["station_region"] ?? null,
+    "station_province" => $user["station_province"] ?? null,
+    "station_city_municipality" => $user["station_city_municipality"] ?? null,
+    "station_barangay" => $user["station_barangay"] ?? null,
+    "station_full_address" => $user["station_full_address"] ?? null,
+    "station_lat" => isset($user["station_lat"]) ? (float)$user["station_lat"] : null,
+    "station_lng" => isset($user["station_lng"]) ? (float)$user["station_lng"] : null,
+    "station_verification_status" => $user["station_verification_status"] ?? null,
+    "station_is_active" => isset($user["station_is_active"]) ? (int)$user["station_is_active"] : null
   ];
 }
