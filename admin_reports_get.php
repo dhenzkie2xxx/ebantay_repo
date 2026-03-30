@@ -1,16 +1,35 @@
 <?php
-require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/require_admin_or_super_admin.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-$id = (int)($_GET["id"] ?? 0);
-if ($id <= 0) {
-  http_response_code(400);
-  echo json_encode(["ok"=>false,"message"=>"Missing id"]);
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
   exit;
 }
 
-$stmt = $pdo->prepare("
+function normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
+}
+
+$id = (int)($_GET["id"] ?? 0);
+if ($id <= 0) {
+  out(400, ["ok" => false, "message" => "Missing id"]);
+}
+
+$role = (string)($AUTH_USER["role"] ?? "");
+$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+
+if ($role === "admin" && !$stationProvince) {
+  out(403, [
+    "ok" => false,
+    "message" => "Admin station province is not configured."
+  ]);
+}
+
+$sql = "
   SELECT
     r.*,
     u.firstname,
@@ -19,16 +38,33 @@ $stmt = $pdo->prepare("
     u.username
   FROM incident_reports r
   LEFT JOIN users u ON u.id = r.reporter_user_id
-  WHERE r.id = ?
-  LIMIT 1
-");
-$stmt->execute([$id]);
+  WHERE r.id = :id
+";
+
+$params = [
+  ":id" => $id
+];
+
+if ($role === "admin") {
+  $sql .= " AND LOWER(TRIM(r.province)) = LOWER(TRIM(:station_province)) ";
+  $params[":station_province"] = $stationProvince;
+}
+
+$sql .= " LIMIT 1 ";
+
+$stmt = $pdo->prepare($sql);
+foreach ($params as $k => $v) {
+  if ($k === ":id") {
+    $stmt->bindValue($k, (int)$v, PDO::PARAM_INT);
+  } else {
+    $stmt->bindValue($k, $v);
+  }
+}
+$stmt->execute();
 $r = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$r) {
-  http_response_code(404);
-  echo json_encode(["ok"=>false,"message"=>"Not found"]);
-  exit;
+  out(404, ["ok" => false, "message" => "Not found"]);
 }
 
 $pc = $pdo->prepare("SELECT COUNT(*) c FROM incident_report_photos WHERE incident_id = ?");
@@ -37,6 +73,11 @@ $photosCount = (int)($pc->fetch(PDO::FETCH_ASSOC)["c"] ?? 0);
 
 echo json_encode([
   "ok" => true,
+  "scope" => [
+    "role" => $role,
+    "station_province" => $role === "admin" ? $stationProvince : null,
+    "is_global" => $role === "super_admin"
+  ],
   "report" => [
     "id" => (int)$r["id"],
     "incident_code" => $r["incident_code"],

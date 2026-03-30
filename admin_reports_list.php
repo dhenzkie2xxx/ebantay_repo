@@ -1,9 +1,21 @@
 <?php
-require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/require_admin_or_super_admin.php";
+
 header("Content-Type: application/json; charset=UTF-8");
 
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
+  exit;
+}
+
+function normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
+}
+
 $verification_status = strtoupper(trim($_GET["status"] ?? "ALL"));
-$allowed = ["ALL","PENDING","VERIFIED","FALSE_REPORT","DUPLICATE"];
+$allowed = ["ALL", "PENDING", "VERIFIED", "FALSE_REPORT", "DUPLICATE"];
 if (!in_array($verification_status, $allowed, true)) $verification_status = "ALL";
 
 $limit = (int)($_GET["limit"] ?? 10);
@@ -17,8 +29,23 @@ $offset = ($page - 1) * $limit;
 $q = trim($_GET["q"] ?? "");
 $category = trim($_GET["category"] ?? "");
 
+$role = (string)($AUTH_USER["role"] ?? "");
+$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+
+if ($role === "admin" && !$stationProvince) {
+  out(403, [
+    "ok" => false,
+    "message" => "Admin station province is not configured."
+  ]);
+}
+
 $where = " WHERE 1=1 ";
 $params = [];
+
+if ($role === "admin") {
+  $where .= " AND LOWER(TRIM(r.province)) = LOWER(TRIM(:station_province)) ";
+  $params[":station_province"] = $stationProvince;
+}
 
 if ($verification_status !== "ALL") {
   $where .= " AND r.verification_status = :verification_status ";
@@ -42,6 +69,7 @@ if ($q !== "") {
     OR u.email LIKE :q
     OR r.barangay LIKE :q
     OR r.city_municipality LIKE :q
+    OR r.province LIKE :q
   ) ";
   $params[":q"] = "%{$q}%";
 }
@@ -54,7 +82,9 @@ $countSql = "
 ";
 
 $countStmt = $pdo->prepare($countSql);
-foreach ($params as $k => $v) $countStmt->bindValue($k, $v);
+foreach ($params as $k => $v) {
+  $countStmt->bindValue($k, $v);
+}
 $countStmt->execute();
 $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
 
@@ -75,6 +105,8 @@ $listSql = "
     r.lng,
     r.barangay,
     r.city_municipality,
+    r.province,
+    r.region,
     r.created_at,
     r.date_reported,
     r.date_incident_from,
@@ -101,7 +133,9 @@ $listSql = "
 ";
 
 $stmt = $pdo->prepare($listSql);
-foreach ($params as $k => $v) $stmt->bindValue($k, $v);
+foreach ($params as $k => $v) {
+  $stmt->bindValue($k, $v);
+}
 $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
 $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
 $stmt->execute();
@@ -114,7 +148,12 @@ echo json_encode([
   "page" => $page,
   "limit" => $limit,
   "total" => $total,
-  "reports" => array_map(function($r){
+  "scope" => [
+    "role" => $role,
+    "station_province" => $role === "admin" ? $stationProvince : null,
+    "is_global" => $role === "super_admin"
+  ],
+  "reports" => array_map(function ($r) {
     return [
       "id" => (int)$r["id"],
       "incident_code" => $r["incident_code"],
@@ -134,6 +173,8 @@ echo json_encode([
       "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
       "barangay" => $r["barangay"],
       "city_municipality" => $r["city_municipality"],
+      "province" => $r["province"],
+      "region" => $r["region"],
       "created_at" => $r["created_at"],
       "date_reported" => $r["date_reported"],
       "date_incident_from" => $r["date_incident_from"],

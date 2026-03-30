@@ -1,7 +1,18 @@
 <?php
-require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/require_admin_or_super_admin.php";
 
 header("Content-Type: application/json; charset=UTF-8");
+
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
+  exit;
+}
+
+function normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
+}
 
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
@@ -30,16 +41,23 @@ if (
   !in_array($incidentPhase, $allowedPhase, true) ||
   !in_array($caseStatus, $allowedCase, true)
 ) {
-  http_response_code(400);
-  echo json_encode([
+  out(400, [
     "ok" => false,
     "message" => "Invalid payload"
   ]);
-  exit;
 }
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
+$role = (string)($AUTH_USER["role"] ?? "");
+$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
 $now = gmdate("Y-m-d H:i:s");
+
+if ($role === "admin" && !$stationProvince) {
+  out(403, [
+    "ok" => false,
+    "message" => "Admin station province is not configured."
+  ]);
+}
 
 function queue_user_notification(
   PDO $pdo,
@@ -93,7 +111,9 @@ try {
       reporter_user_id,
       verification_status,
       incident_phase,
-      case_status
+      case_status,
+      reviewed_at,
+      province
     FROM incident_reports
     WHERE id = ?
     LIMIT 1
@@ -103,23 +123,21 @@ try {
 
   if (!$old) {
     $pdo->rollBack();
-    http_response_code(404);
-    echo json_encode([
+    out(404, [
       "ok" => false,
       "message" => "Incident not found"
     ]);
-    exit;
   }
 
-  $reviewedAt = null;
-  $resolvedAt = null;
-
-  if ($verificationStatus === "VERIFIED" && empty($old["reviewed_at"])) {
-    $reviewedAt = $now;
-  }
-
-  if ($incidentPhase === "RESOLVED") {
-    $resolvedAt = $now;
+  if (
+    $role === "admin" &&
+    strtolower(trim((string)($old["province"] ?? ""))) !== strtolower($stationProvince)
+  ) {
+    $pdo->rollBack();
+    out(403, [
+      "ok" => false,
+      "message" => "You are not allowed to update incidents outside your province."
+    ]);
   }
 
   $stmt = $pdo->prepare("
@@ -147,7 +165,7 @@ try {
     ":case_status" => $caseStatus,
     ":admin_notes" => $notes,
     ":reviewed_by" => $adminId,
-    ":set_reviewed_at" => ($verificationStatus === "VERIFIED") ? 1 : 0,
+    ":set_reviewed_at" => ($verificationStatus === "VERIFIED" && empty($old["reviewed_at"])) ? 1 : 0,
     ":reviewed_at" => $now,
     ":set_resolved_at" => ($incidentPhase === "RESOLVED") ? 1 : 0,
     ":resolved_at" => $now,
@@ -218,14 +236,19 @@ try {
 
   $pdo->commit();
 
-  echo json_encode([
+  out(200, [
     "ok" => true,
-    "message" => "Incident updated successfully"
+    "message" => "Incident updated successfully",
+    "scope" => [
+      "role" => $role,
+      "station_province" => $role === "admin" ? $stationProvince : null,
+      "incident_province" => $old["province"] ?? null
+    ]
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();
-  http_response_code(500);
-  echo json_encode([
+
+  out(500, [
     "ok" => false,
     "message" => "Server error",
     "debug" => $e->getMessage()
