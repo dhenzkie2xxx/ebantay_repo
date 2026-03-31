@@ -24,7 +24,9 @@ try {
       hotspot_type,
       risk_level,
       last_detected_at,
-      province
+      province,
+      city_municipality,
+      barangay
     FROM crime_hotspots
     $hotspotWhere
     ORDER BY
@@ -142,7 +144,9 @@ try {
         "hotspot_type" => $r["hotspot_type"],
         "risk_level" => $r["risk_level"],
         "last_detected_at" => $r["last_detected_at"],
-        "province" => $r["province"] ?? null
+        "province" => $r["province"] ?? null,
+        "city_municipality" => $r["city_municipality"] ?? null,
+        "barangay" => $r["barangay"] ?? null
       ];
     }, $hotspots),
 
