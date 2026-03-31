@@ -8,89 +8,97 @@ function out($code, $payload) {
   exit;
 }
 
-function clean_text($value): string {
-  return trim((string)$value);
+function normalize_scope_value($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : $value;
 }
 
-function normalize_ph_address(array $addr): array {
-  $countryCode = strtolower(clean_text($addr["country_code"] ?? ""));
-  $isPhilippines = $countryCode === "ph";
+function reverse_geocode_scope(float $lat, float $lng): array {
+  $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
+    . urlencode((string)$lat)
+    . "&lon="
+    . urlencode((string)$lng);
 
-  $barangay = clean_text(
-    $addr["suburb"]
+  $opts = [
+    "http" => [
+      "method" => "GET",
+      "header" =>
+        "User-Agent: eBantay/1.0\r\n" .
+        "Accept: application/json\r\n",
+      "timeout" => 15
+    ]
+  ];
+
+  $context = stream_context_create($opts);
+  $raw = @file_get_contents($url, false, $context);
+
+  if ($raw === false) {
+    return [
+      "ok" => false,
+      "message" => "Reverse geocoding service unavailable"
+    ];
+  }
+
+  $json = json_decode($raw, true);
+  if (!is_array($json)) {
+    return [
+      "ok" => false,
+      "message" => "Invalid geocoding response"
+    ];
+  }
+
+  $addr = $json["address"] ?? [];
+
+  $barangay = $addr["suburb"]
     ?? $addr["village"]
     ?? $addr["hamlet"]
     ?? $addr["neighbourhood"]
     ?? $addr["quarter"]
-    ?? ""
-  );
+    ?? $addr["city_district"]
+    ?? "";
 
-  $cityMunicipality = clean_text(
-    $addr["city"]
+  $cityMunicipality = $addr["city"]
     ?? $addr["municipality"]
     ?? $addr["town"]
-    ?? ""
-  );
+    ?? "";
 
-  $region = "";
-  $province = "";
+  $state = trim((string)($addr["state"] ?? ""));
+  $region = $addr["region"]
+    ?? $addr["state_district"]
+    ?? "";
 
-  if ($isPhilippines) {
-    /*
-    |--------------------------------------------------------------------------
-    | PHILIPPINES-SPECIFIC FIELD PRIORITY
-    |--------------------------------------------------------------------------
-    | Nominatim often returns:
-    | - state => REGION (e.g. Northern Mindanao)
-    | - county / province => ACTUAL PROVINCE (e.g. Bukidnon)
-    */
-    $province = clean_text(
-      $addr["province"]
-      ?? $addr["county"]
-      ?? $addr["state_district"]
-      ?? ""
-    );
+  $province = $addr["province"]
+    ?? $addr["county"]
+    ?? "";
 
-    $region = clean_text(
-      $addr["region"]
-      ?? $addr["state"]
-      ?? ""
-    );
+  if ($province === "" && $state !== "") {
+    $stateLower = strtolower($state);
+    $looksLikeRegion =
+      str_contains($stateLower, "region") ||
+      str_contains($stateLower, "national capital region") ||
+      $stateLower === "ncr" ||
+      str_contains($stateLower, "metro manila");
 
-    /*
-    |--------------------------------------------------------------------------
-    | Fallback city handling
-    |--------------------------------------------------------------------------
-    | In some PH responses, city may hide under village/town/municipality.
-    */
-    if ($cityMunicipality === "") {
-      $cityMunicipality = clean_text(
-        $addr["municipality"]
-        ?? $addr["town"]
-        ?? $addr["city_district"]
-        ?? ""
-      );
+    if ($looksLikeRegion) {
+      if ($region === "") $region = $state;
+    } else {
+      $province = $state;
     }
-  } else {
-    $province = clean_text(
-      $addr["province"]
-      ?? $addr["state"]
-      ?? $addr["county"]
-      ?? ""
-    );
-
-    $region = clean_text(
-      $addr["region"]
-      ?? $addr["state_district"]
-      ?? ""
-    );
   }
 
+  $road = $addr["road"] ?? "";
+  $displayName = $json["display_name"] ?? "";
+
   return [
-    "barangay" => $barangay,
-    "city_municipality" => $cityMunicipality,
-    "province" => $province,
-    "region" => $region
+    "ok" => true,
+    "address" => [
+      "barangay" => normalize_scope_value($barangay),
+      "city_municipality" => normalize_scope_value($cityMunicipality),
+      "province" => normalize_scope_value($province),
+      "region" => normalize_scope_value($region),
+      "place_of_incident" => normalize_scope_value($road),
+      "display_name" => normalize_scope_value($displayName)
+    ]
   ];
 }
 
@@ -113,51 +121,16 @@ if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
 }
 
 try {
-  $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
-    . urlencode((string)$lat)
-    . "&lon="
-    . urlencode((string)$lng);
+  $result = reverse_geocode_scope($lat, $lng);
 
-  $opts = [
-    "http" => [
-      "method" => "GET",
-      "header" =>
-        "User-Agent: eBantay/1.0\r\n" .
-        "Accept: application/json\r\n",
-      "timeout" => 15
-    ]
-  ];
-
-  $context = stream_context_create($opts);
-  $raw = @file_get_contents($url, false, $context);
-
-  if ($raw === false) {
-    out(502, ["ok" => false, "message" => "Reverse geocoding service unavailable"]);
+  if (!$result["ok"]) {
+    out(502, [
+      "ok" => false,
+      "message" => $result["message"]
+    ]);
   }
 
-  $json = json_decode($raw, true);
-  if (!is_array($json)) {
-    out(502, ["ok" => false, "message" => "Invalid geocoding response"]);
-  }
-
-  $addr = $json["address"] ?? [];
-  $normalized = normalize_ph_address($addr);
-
-  $road = clean_text($addr["road"] ?? "");
-  $displayName = clean_text($json["display_name"] ?? "");
-
-  out(200, [
-    "ok" => true,
-    "address" => [
-      "barangay" => $normalized["barangay"],
-      "city_municipality" => $normalized["city_municipality"],
-      "province" => $normalized["province"],
-      "region" => $normalized["region"],
-      "place_of_incident" => $road,
-      "display_name" => $displayName
-    ],
-    "raw_address" => $addr
-  ]);
+  out(200, $result);
 } catch (Throwable $e) {
   out(500, [
     "ok" => false,
