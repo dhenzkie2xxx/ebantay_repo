@@ -10,7 +10,9 @@ function admin_scope_from_auth(PDO $pdo, array $authUser): array {
       "station_id" => null,
       "station_province" => null,
       "station_city_municipality" => null,
-      "station_barangay" => null
+      "station_barangay" => null,
+      "station_lat" => null,
+      "station_lng" => null
     ];
   }
 
@@ -21,7 +23,9 @@ function admin_scope_from_auth(PDO $pdo, array $authUser): array {
       "station_id" => null,
       "station_province" => null,
       "station_city_municipality" => null,
-      "station_barangay" => null
+      "station_barangay" => null,
+      "station_lat" => null,
+      "station_lng" => null
     ];
   }
 
@@ -30,7 +34,9 @@ function admin_scope_from_auth(PDO $pdo, array $authUser): array {
       id,
       province,
       city_municipality,
-      barangay
+      barangay,
+      lat,
+      lng
     FROM police_stations
     WHERE id = ?
     LIMIT 1
@@ -43,7 +49,9 @@ function admin_scope_from_auth(PDO $pdo, array $authUser): array {
     "station_id" => $station["id"] ?? null,
     "station_province" => $station["province"] ?? null,
     "station_city_municipality" => $station["city_municipality"] ?? null,
-    "station_barangay" => $station["barangay"] ?? null
+    "station_barangay" => $station["barangay"] ?? null,
+    "station_lat" => isset($station["lat"]) ? (float)$station["lat"] : null,
+    "station_lng" => isset($station["lng"]) ? (float)$station["lng"] : null
   ];
 }
 
