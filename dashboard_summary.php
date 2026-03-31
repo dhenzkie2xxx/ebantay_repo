@@ -1,159 +1,127 @@
 <?php
 require_once __DIR__ . "/require_admin_or_super_admin.php";
+require_once __DIR__ . "/admin_scope_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-function out($code, $payload) {
-  http_response_code($code);
-  echo json_encode($payload);
-  exit;
-}
-
-function normalize_scope_value($value): ?string {
-  $value = trim((string)($value ?? ""));
-  return $value === "" ? null : $value;
-}
-
-function build_scope_clause(string $column, string $role, ?string $stationProvince, array &$params, string $paramName = ":station_province"): string {
-  if ($role === "admin") {
-    $params[$paramName] = $stationProvince;
-    return " AND LOWER(TRIM({$column})) = LOWER(TRIM({$paramName})) ";
-  }
-  return "";
-}
+$scope = admin_scope_from_auth($pdo, $AUTH_USER);
 
 function one(PDO $pdo, string $sql, array $params = []): int {
-  $stmt = $pdo->prepare($sql);
-  foreach ($params as $k => $v) {
-    $stmt->bindValue($k, $v);
-  }
-  $stmt->execute();
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+  $q = $pdo->prepare($sql);
+  $q->execute($params);
+  $row = $q->fetch(PDO::FETCH_ASSOC);
   return (int)($row["c"] ?? 0);
 }
 
-$role = (string)($AUTH_USER["role"] ?? "");
-$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+$params = [];
+$incidentWhere = " WHERE 1=1 ";
+$panicWhere = " WHERE 1=1 ";
+$hotspotWhere = " WHERE 1=1 ";
 
-if ($role === "admin" && !$stationProvince) {
-  out(403, [
-    "ok" => false,
-    "message" => "Admin station province is not configured."
-  ]);
-}
-
-$paramsReports = [];
-$incidentScope = build_scope_clause("province", $role, $stationProvince, $paramsReports);
-
-$paramsPanic = [];
-$panicScope = build_scope_clause("province", $role, $stationProvince, $paramsPanic);
+$incidentWhere .= scope_where_clause("province", $scope, $params, ":incident_province");
+$panicWhere .= scope_where_clause("province", $scope, $params, ":panic_province");
+$hotspotWhere .= scope_where_clause("province", $scope, $params, ":hotspot_province");
 
 echo json_encode([
   "ok" => true,
-  "scope" => [
-    "role" => $role,
-    "station_province" => $role === "admin" ? $stationProvince : null,
-    "is_global" => $role === "super_admin"
-  ],
+  "scope" => $scope,
   "cards" => [
     "totalReports" => one(
       $pdo,
-      "SELECT COUNT(*) c FROM incident_reports WHERE 1=1 {$incidentScope}",
-      $paramsReports
+      "SELECT COUNT(*) c FROM incident_reports $incidentWhere",
+      $params
     ),
 
     "reportsThisWeek" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE YEARWEEK(created_at, 1) = YEARWEEK(UTC_DATE(), 1)
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND YEARWEEK(created_at, 1) = YEARWEEK(UTC_DATE(), 1)",
+      $params
     ),
 
     "pendingVerification" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE verification_status = 'PENDING'
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND verification_status = 'PENDING'",
+      $params
     ),
 
     "verifiedIncidents" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE verification_status = 'VERIFIED'
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND verification_status = 'VERIFIED'",
+      $params
     ),
 
     "falseReports" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE verification_status = 'FALSE_REPORT'
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND verification_status = 'FALSE_REPORT'",
+      $params
     ),
 
     "duplicateReports" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE verification_status = 'DUPLICATE'
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND verification_status = 'DUPLICATE'",
+      $params
     ),
 
     "openCases" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE case_status = 'OPEN'
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND case_status = 'OPEN'",
+      $params
     ),
 
     "resolvedCases" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE (incident_phase = 'RESOLVED'
-          OR case_status IN ('CLOSED','SOLVED','CLEARED'))
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND (incident_phase = 'RESOLVED'
+         OR case_status IN ('CLOSED','SOLVED','CLEARED'))",
+      $params
     ),
 
     "riskIncidents" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM incident_reports
-       WHERE verification_status = 'VERIFIED'
-         AND risk_status = 'RISK'
-       {$incidentScope}",
-      $paramsReports
+       $incidentWhere
+       AND verification_status = 'VERIFIED'
+       AND risk_status = 'RISK'",
+      $params
     ),
 
     "panicNew" => one(
       $pdo,
       "SELECT COUNT(*) c
        FROM panic_requests
-       WHERE status = 'new'
-       {$panicScope}",
-      $paramsPanic
+       $panicWhere
+       AND status = 'new'",
+      $params
     ),
 
     "activeHotspots" => one(
       $pdo,
-      "SELECT COUNT(DISTINCT hotspot_id) c
-       FROM incident_reports
-       WHERE verification_status = 'VERIFIED'
-         AND incident_phase <> 'REJECTED'
-         AND hotspot_id IS NOT NULL
-       {$incidentScope}",
-      $paramsReports
+      "SELECT COUNT(*) c
+       FROM crime_hotspots
+       $hotspotWhere
+       AND active = 1",
+      $params
     )
   ]
 ]);
