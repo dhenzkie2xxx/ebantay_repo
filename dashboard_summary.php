@@ -13,115 +13,128 @@ function one(PDO $pdo, string $sql, array $params = []): int {
   return (int)($row["c"] ?? 0);
 }
 
-$params = [];
-$incidentWhere = " WHERE 1=1 ";
-$panicWhere = " WHERE 1=1 ";
-$hotspotWhere = " WHERE 1=1 ";
+try {
+  $incidentParams = [];
+  $incidentWhere = " WHERE 1=1 ";
+  $incidentWhere .= scope_where_clause("province", $scope, $incidentParams, ":incident_province");
 
-$incidentWhere .= scope_where_clause("province", $scope, $params, ":incident_province");
-$panicWhere .= scope_where_clause("province", $scope, $params, ":panic_province");
-$hotspotWhere .= scope_where_clause("province", $scope, $params, ":hotspot_province");
+  $panicParams = [];
+  $panicWhere = " WHERE 1=1 ";
+  $panicWhere .= scope_where_clause("province", $scope, $panicParams, ":panic_province");
 
-echo json_encode([
-  "ok" => true,
-  "scope" => $scope,
-  "cards" => [
-    "totalReports" => one(
-      $pdo,
-      "SELECT COUNT(*) c FROM incident_reports $incidentWhere",
-      $params
-    ),
+  $hotspotParams = [];
+  $hotspotWhere = " WHERE 1=1 ";
+  $hotspotWhere .= scope_where_clause("province", $scope, $hotspotParams, ":hotspot_province");
 
-    "reportsThisWeek" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND YEARWEEK(created_at, 1) = YEARWEEK(UTC_DATE(), 1)",
-      $params
-    ),
+  echo json_encode([
+    "ok" => true,
+    "scope" => $scope,
+    "cards" => [
+      "totalReports" => one(
+        $pdo,
+        "SELECT COUNT(*) c FROM incident_reports $incidentWhere",
+        $incidentParams
+      ),
 
-    "pendingVerification" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND verification_status = 'PENDING'",
-      $params
-    ),
+      "reportsThisWeek" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND YEARWEEK(created_at, 1) = YEARWEEK(UTC_DATE(), 1)",
+        $incidentParams
+      ),
 
-    "verifiedIncidents" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND verification_status = 'VERIFIED'",
-      $params
-    ),
+      "pendingVerification" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND verification_status = 'PENDING'",
+        $incidentParams
+      ),
 
-    "falseReports" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND verification_status = 'FALSE_REPORT'",
-      $params
-    ),
+      "verifiedIncidents" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND verification_status = 'VERIFIED'",
+        $incidentParams
+      ),
 
-    "duplicateReports" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND verification_status = 'DUPLICATE'",
-      $params
-    ),
+      "falseReports" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND verification_status = 'FALSE_REPORT'",
+        $incidentParams
+      ),
 
-    "openCases" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND case_status = 'OPEN'",
-      $params
-    ),
+      "duplicateReports" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND verification_status = 'DUPLICATE'",
+        $incidentParams
+      ),
 
-    "resolvedCases" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND (incident_phase = 'RESOLVED'
-         OR case_status IN ('CLOSED','SOLVED','CLEARED'))",
-      $params
-    ),
+      "openCases" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND case_status = 'OPEN'",
+        $incidentParams
+      ),
 
-    "riskIncidents" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM incident_reports
-       $incidentWhere
-       AND verification_status = 'VERIFIED'
-       AND risk_status = 'RISK'",
-      $params
-    ),
+      "resolvedCases" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND (incident_phase = 'RESOLVED'
+           OR case_status IN ('CLOSED','SOLVED','CLEARED'))",
+        $incidentParams
+      ),
 
-    "panicNew" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM panic_requests
-       $panicWhere
-       AND status = 'new'",
-      $params
-    ),
+      "riskIncidents" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM incident_reports
+         $incidentWhere
+         AND verification_status = 'VERIFIED'
+         AND risk_status = 'RISK'",
+        $incidentParams
+      ),
 
-    "activeHotspots" => one(
-      $pdo,
-      "SELECT COUNT(*) c
-       FROM crime_hotspots
-       $hotspotWhere
-       AND active = 1",
-      $params
-    )
-  ]
-]);
+      "panicNew" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM panic_requests
+         $panicWhere
+         AND status = 'new'",
+        $panicParams
+      ),
+
+      "activeHotspots" => one(
+        $pdo,
+        "SELECT COUNT(*) c
+         FROM crime_hotspots
+         $hotspotWhere
+         AND active = 1",
+        $hotspotParams
+      )
+    ]
+  ]);
+} catch (Throwable $e) {
+  http_response_code(500);
+  echo json_encode([
+    "ok" => false,
+    "message" => $e->getMessage(),
+    "file" => basename(__FILE__),
+    "line" => $e->getLine()
+  ]);
+}

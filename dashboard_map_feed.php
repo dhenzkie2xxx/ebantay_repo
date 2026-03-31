@@ -7,19 +7,24 @@ header("Content-Type: application/json; charset=UTF-8");
 try {
   $scope = admin_scope_from_auth($pdo, $AUTH_USER);
 
-  $params = [];
+  // -------------------------
+  // HOTSPOTS
+  // -------------------------
+  $hotspotParams = [];
   $hotspotWhere = " WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $panicWhere = " WHERE p.status IN ('new', 'ack') AND p.lat IS NOT NULL AND p.lng IS NOT NULL ";
-  $verifiedWhere = " WHERE verification_status = 'VERIFIED' AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $pendingWhere = " WHERE verification_status = 'PENDING' AND lat IS NOT NULL AND lng IS NOT NULL ";
-
-  $hotspotWhere .= scope_where_clause("province", $scope, $params, ":hotspot_province");
-  $panicWhere .= scope_where_clause("p.province", $scope, $params, ":panic_province");
-  $verifiedWhere .= scope_where_clause("province", $scope, $params, ":verified_province");
-  $pendingWhere .= scope_where_clause("province", $scope, $params, ":pending_province");
+  $hotspotWhere .= scope_where_clause("province", $scope, $hotspotParams, ":hotspot_province");
 
   $hotspotStmt = $pdo->prepare("
-    SELECT id, name, lat, lng, radius_m, hotspot_type, risk_level, last_detected_at, province
+    SELECT
+      id,
+      name,
+      lat,
+      lng,
+      radius_m,
+      hotspot_type,
+      risk_level,
+      last_detected_at,
+      province
     FROM crime_hotspots
     $hotspotWhere
     ORDER BY
@@ -31,8 +36,15 @@ try {
       END,
       last_detected_at DESC
   ");
-  $hotspotStmt->execute($params);
+  $hotspotStmt->execute($hotspotParams);
   $hotspots = $hotspotStmt->fetchAll(PDO::FETCH_ASSOC);
+
+  // -------------------------
+  // PANIC QUEUE
+  // -------------------------
+  $panicParams = [];
+  $panicWhere = " WHERE p.status IN ('new', 'ack') AND p.lat IS NOT NULL AND p.lng IS NOT NULL ";
+  $panicWhere .= scope_where_clause("p.province", $scope, $panicParams, ":panic_province");
 
   $panicStmt = $pdo->prepare("
     SELECT
@@ -59,8 +71,15 @@ try {
       p.created_at DESC
     LIMIT 200
   ");
-  $panicStmt->execute($params);
+  $panicStmt->execute($panicParams);
   $panic = $panicStmt->fetchAll(PDO::FETCH_ASSOC);
+
+  // -------------------------
+  // VERIFIED INCIDENT POINTS
+  // -------------------------
+  $verifiedParams = [];
+  $verifiedWhere = " WHERE verification_status = 'VERIFIED' AND lat IS NOT NULL AND lng IS NOT NULL ";
+  $verifiedWhere .= scope_where_clause("province", $scope, $verifiedParams, ":verified_province");
 
   $verifiedStmt = $pdo->prepare("
     SELECT
@@ -79,8 +98,15 @@ try {
     ORDER BY created_at DESC
     LIMIT 1000
   ");
-  $verifiedStmt->execute($params);
+  $verifiedStmt->execute($verifiedParams);
   $verified = $verifiedStmt->fetchAll(PDO::FETCH_ASSOC);
+
+  // -------------------------
+  // PENDING INCIDENT REPORTS
+  // -------------------------
+  $pendingParams = [];
+  $pendingWhere = " WHERE verification_status = 'PENDING' AND lat IS NOT NULL AND lng IS NOT NULL ";
+  $pendingWhere .= scope_where_clause("province", $scope, $pendingParams, ":pending_province");
 
   $pendingStmt = $pdo->prepare("
     SELECT
@@ -100,7 +126,7 @@ try {
     ORDER BY created_at DESC
     LIMIT 300
   ");
-  $pendingStmt->execute($params);
+  $pendingStmt->execute($pendingParams);
   $pending = $pendingStmt->fetchAll(PDO::FETCH_ASSOC);
 
   echo json_encode([
@@ -110,8 +136,8 @@ try {
       return [
         "id" => (int)$r["id"],
         "name" => $r["name"],
-        "lat" => (float)$r["lat"],
-        "lng" => (float)$r["lng"],
+        "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
+        "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
         "radius_m" => (int)$r["radius_m"],
         "hotspot_type" => $r["hotspot_type"],
         "risk_level" => $r["risk_level"],
