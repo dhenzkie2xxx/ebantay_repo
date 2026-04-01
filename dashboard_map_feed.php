@@ -12,21 +12,31 @@ try {
   // -------------------------
   $hotspotParams = [];
   $hotspotWhere = " WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $hotspotWhere .= scope_where_clause("province", $scope, $hotspotParams, ":hotspot_province");
+  $hotspotWhere .= scope_location_where_clause(
+    $scope,
+    $hotspotParams,
+    "province",
+    "city_municipality",
+    "barangay",
+    "region",
+    "hotspot"
+  );
 
   $hotspotStmt = $pdo->prepare("
     SELECT
       id,
       name,
+      region,
+      province,
+      city_municipality,
+      barangay,
       lat,
       lng,
       radius_m,
       hotspot_type,
       risk_level,
       last_detected_at,
-      province,
-      city_municipality,
-      barangay
+      created_at
     FROM crime_hotspots
     $hotspotWhere
     ORDER BY
@@ -36,7 +46,8 @@ try {
         WHEN 'LOW' THEN 3
         ELSE 4
       END,
-      last_detected_at DESC
+      last_detected_at DESC,
+      created_at DESC
   ");
   $hotspotStmt->execute($hotspotParams);
   $hotspots = $hotspotStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -46,7 +57,15 @@ try {
   // -------------------------
   $panicParams = [];
   $panicWhere = " WHERE p.status IN ('new', 'ack') AND p.lat IS NOT NULL AND p.lng IS NOT NULL ";
-  $panicWhere .= scope_where_clause("p.province", $scope, $panicParams, ":panic_province");
+  $panicWhere .= scope_location_where_clause(
+    $scope,
+    $panicParams,
+    "p.province",
+    "p.city_municipality",
+    "p.barangay",
+    "p.region",
+    "panic"
+  );
 
   $panicStmt = $pdo->prepare("
     SELECT
@@ -56,6 +75,7 @@ try {
       p.lng,
       p.status,
       p.created_at,
+      p.region,
       p.province,
       p.city_municipality,
       p.barangay,
@@ -80,8 +100,21 @@ try {
   // VERIFIED INCIDENT POINTS
   // -------------------------
   $verifiedParams = [];
-  $verifiedWhere = " WHERE verification_status = 'VERIFIED' AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $verifiedWhere .= scope_where_clause("province", $scope, $verifiedParams, ":verified_province");
+  $verifiedWhere = "
+    WHERE verification_status = 'VERIFIED'
+      AND incident_phase <> 'REJECTED'
+      AND lat IS NOT NULL
+      AND lng IS NOT NULL
+  ";
+  $verifiedWhere .= scope_location_where_clause(
+    $scope,
+    $verifiedParams,
+    "province",
+    "city_municipality",
+    "barangay",
+    "region",
+    "verified"
+  );
 
   $verifiedStmt = $pdo->prepare("
     SELECT
@@ -90,6 +123,7 @@ try {
       incident_type,
       lat,
       lng,
+      region,
       barangay,
       city_municipality,
       province,
@@ -107,8 +141,21 @@ try {
   // PENDING INCIDENT REPORTS
   // -------------------------
   $pendingParams = [];
-  $pendingWhere = " WHERE verification_status = 'PENDING' AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $pendingWhere .= scope_where_clause("province", $scope, $pendingParams, ":pending_province");
+  $pendingWhere = "
+    WHERE verification_status = 'PENDING'
+      AND incident_phase <> 'REJECTED'
+      AND lat IS NOT NULL
+      AND lng IS NOT NULL
+  ";
+  $pendingWhere .= scope_location_where_clause(
+    $scope,
+    $pendingParams,
+    "province",
+    "city_municipality",
+    "barangay",
+    "region",
+    "pending"
+  );
 
   $pendingStmt = $pdo->prepare("
     SELECT
@@ -118,6 +165,7 @@ try {
       incident_type,
       lat,
       lng,
+      region,
       barangay,
       city_municipality,
       province,
@@ -134,65 +182,72 @@ try {
   echo json_encode([
     "ok" => true,
     "scope" => $scope,
-    "hotspots" => array_map(function($r) {
+
+    "hotspots" => array_map(function ($r) {
       return [
         "id" => (int)$r["id"],
         "name" => $r["name"],
-        "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
-        "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
-        "radius_m" => (int)$r["radius_m"],
-        "hotspot_type" => $r["hotspot_type"],
-        "risk_level" => $r["risk_level"],
-        "last_detected_at" => $r["last_detected_at"],
+        "region" => $r["region"] ?? null,
         "province" => $r["province"] ?? null,
         "city_municipality" => $r["city_municipality"] ?? null,
-        "barangay" => $r["barangay"] ?? null
+        "barangay" => $r["barangay"] ?? null,
+        "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
+        "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
+        "radius_m" => isset($r["radius_m"]) ? (int)$r["radius_m"] : 0,
+        "hotspot_type" => $r["hotspot_type"] ?? null,
+        "risk_level" => strtoupper((string)($r["risk_level"] ?? "LOW")),
+        "last_detected_at" => $r["last_detected_at"] ?? null,
+        "created_at" => $r["created_at"] ?? null
       ];
     }, $hotspots),
 
-    "panic_queue" => array_map(function($r) {
+    "panic_queue" => array_map(function ($r) {
+      $fullName = trim(((string)($r["firstname"] ?? "")) . " " . ((string)($r["lastname"] ?? "")));
       return [
         "id" => (int)$r["id"],
-        "level" => $r["level"],
+        "level" => $r["level"] ?? null,
         "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
         "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
-        "status" => $r["status"],
-        "created_at" => $r["created_at"],
-        "user_name" => trim(($r["firstname"] ?? "") . " " . ($r["lastname"] ?? "")),
+        "status" => $r["status"] ?? null,
+        "created_at" => $r["created_at"] ?? null,
+        "user_name" => $fullName !== "" ? $fullName : null,
+        "region" => $r["region"] ?? null,
         "province" => $r["province"] ?? null,
         "city_municipality" => $r["city_municipality"] ?? null,
         "barangay" => $r["barangay"] ?? null
       ];
     }, $panic),
 
-    "verified_points" => array_map(function($r) {
+    "verified_points" => array_map(function ($r) {
       return [
         "id" => (int)$r["id"],
-        "title" => $r["title"],
-        "incident_type" => $r["incident_type"],
+        "title" => $r["title"] ?? null,
+        "incident_type" => $r["incident_type"] ?? null,
         "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
         "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
-        "barangay" => $r["barangay"],
-        "city_municipality" => $r["city_municipality"],
+        "region" => $r["region"] ?? null,
+        "barangay" => $r["barangay"] ?? null,
+        "city_municipality" => $r["city_municipality"] ?? null,
         "province" => $r["province"] ?? null,
-        "date_reported" => $r["date_reported"],
-        "created_at" => $r["created_at"]
+        "date_reported" => $r["date_reported"] ?? null,
+        "created_at" => $r["created_at"] ?? null
       ];
     }, $verified),
 
-    "pending_reports" => array_map(function($r) {
+    "pending_reports" => array_map(function ($r) {
       return [
         "id" => (int)$r["id"],
-        "incident_code" => $r["incident_code"],
-        "title" => $r["title"],
-        "incident_type" => $r["incident_type"],
+        "incident_code" => $r["incident_code"] ?? null,
+        "title" => $r["title"] ?? null,
+        "incident_type" => $r["incident_type"] ?? null,
         "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
         "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
-        "barangay" => $r["barangay"],
-        "city_municipality" => $r["city_municipality"],
+        "region" => $r["region"] ?? null,
+        "barangay" => $r["barangay"] ?? null,
+        "city_municipality" => $r["city_municipality"] ?? null,
         "province" => $r["province"] ?? null,
-        "verification_status" => $r["verification_status"],
-        "created_at" => $r["created_at"]
+        "verification_status" => $r["verification_status"] ?? null,
+        "created_at" => $r["created_at"] ?? null
       ];
     }, $pending)
   ]);

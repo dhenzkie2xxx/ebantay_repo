@@ -13,17 +13,31 @@ try {
 
   $params = [];
   $where = " WHERE active = 1 ";
-  $where .= scope_where_clause("province", $scope, $params, ":scope_province");
+  $where .= scope_location_where_clause(
+    $scope,
+    $params,
+    "province",
+    "city_municipality",
+    "barangay",
+    "region",
+    "hotspot_list"
+  );
 
   $sql = "
     SELECT
       id,
       name,
+      region,
+      province,
+      city_municipality,
+      barangay,
+      lat,
+      lng,
       radius_m,
       hotspot_type,
       risk_level,
       last_detected_at,
-      province
+      created_at
     FROM crime_hotspots
     $where
     ORDER BY
@@ -46,14 +60,18 @@ try {
   while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     $items[] = [
       "id" => (int)$row["id"],
-      "name" => $row["name"],
-      "radius_m" => (int)$row["radius_m"],
-      "hotspot_type" => $row["hotspot_type"],
-      "risk_level" => strtoupper((string)($row["risk_level"] ?? "UNKNOWN")),
+      "name" => $row["name"] ?? null,
+      "region" => $row["region"] ?? null,
       "province" => $row["province"] ?? null,
-      "last_detected_at" => $row["last_detected_at"]
-        ? gmdate("Y-m-d H:i", strtotime($row["last_detected_at"]))
-        : null
+      "city_municipality" => $row["city_municipality"] ?? null,
+      "barangay" => $row["barangay"] ?? null,
+      "lat" => $row["lat"] !== null ? (float)$row["lat"] : null,
+      "lng" => $row["lng"] !== null ? (float)$row["lng"] : null,
+      "radius_m" => isset($row["radius_m"]) ? (int)$row["radius_m"] : 0,
+      "hotspot_type" => $row["hotspot_type"] ?? null,
+      "risk_level" => strtoupper((string)($row["risk_level"] ?? "UNKNOWN")),
+      "last_detected_at" => $row["last_detected_at"] ?? null,
+      "created_at" => $row["created_at"] ?? null
     ];
   }
 

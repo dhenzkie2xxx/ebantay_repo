@@ -33,7 +33,20 @@ function hotspot_compute_risk_level($color) {
 
 function hotspot_base_rows(PDO $pdo): array {
   $stmt = $pdo->query("
-    SELECT id, name, lat, lng, radius_m, hotspot_type, risk_level, last_detected_at, created_at
+    SELECT
+      id,
+      name,
+      region,
+      province,
+      city_municipality,
+      barangay,
+      lat,
+      lng,
+      radius_m,
+      hotspot_type,
+      risk_level,
+      last_detected_at,
+      created_at
     FROM crime_hotspots
     WHERE active = 1
     ORDER BY id DESC
@@ -324,9 +337,23 @@ function hotspot_generate_name(array $incident, string $hotspotType): string {
   return $hotspotType . " - Auto Detected";
 }
 
-function hotspot_find_existing(PDO $pdo, float $lat, float $lng, int $mergeDistanceM = 250): ?array {
+function hotspot_find_existing(PDO $pdo, float $lat, float $lng, array $incident, int $mergeDistanceM = 250): ?array {
   $stmt = $pdo->query("
-    SELECT id, name, lat, lng, radius_m, hotspot_type, risk_level, active, created_at, last_detected_at
+    SELECT
+      id,
+      name,
+      region,
+      province,
+      city_municipality,
+      barangay,
+      lat,
+      lng,
+      radius_m,
+      hotspot_type,
+      risk_level,
+      active,
+      created_at,
+      last_detected_at
     FROM crime_hotspots
     WHERE active = 1
   ");
@@ -336,6 +363,10 @@ function hotspot_find_existing(PDO $pdo, float $lat, float $lng, int $mergeDista
   $nearestD = null;
 
   foreach ($rows as $r) {
+    if (!hotspot_same_scope($r, $incident)) {
+      continue;
+    }
+
     $d = hotspot_distance_meters($lat, $lng, (float)$r["lat"], (float)$r["lng"]);
     if ($d <= $mergeDistanceM && ($nearestD === null || $d < $nearestD)) {
       $nearest = $r;
@@ -360,6 +391,10 @@ function hotspot_create(PDO $pdo, array $incident, array $ctx): int {
     INSERT INTO crime_hotspots
     (
       name,
+      region,
+      province,
+      city_municipality,
+      barangay,
       lat,
       lng,
       radius_m,
@@ -368,10 +403,14 @@ function hotspot_create(PDO $pdo, array $incident, array $ctx): int {
       risk_level,
       last_detected_at
     )
-    VALUES (?, ?, ?, ?, 1, ?, ?, UTC_TIMESTAMP())
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, UTC_TIMESTAMP())
   ");
   $stmt->execute([
     $name,
+    hotspot_normalize_scope_value($incident["region"] ?? null),
+    hotspot_normalize_scope_value($incident["province"] ?? null),
+    hotspot_normalize_scope_value($incident["city_municipality"] ?? null),
+    hotspot_normalize_scope_value($incident["barangay"] ?? null),
     $incident["lat"],
     $incident["lng"],
     $cfg["radius_m"],
@@ -392,6 +431,10 @@ function hotspot_update(PDO $pdo, int $hotspotId, array $incident, array $ctx): 
     UPDATE crime_hotspots
     SET
       name = ?,
+      region = ?,
+      province = ?,
+      city_municipality = ?,
+      barangay = ?,
       lat = ?,
       lng = ?,
       radius_m = ?,
@@ -403,6 +446,10 @@ function hotspot_update(PDO $pdo, int $hotspotId, array $incident, array $ctx): 
   ");
   $stmt->execute([
     $name,
+    hotspot_normalize_scope_value($incident["region"] ?? null),
+    hotspot_normalize_scope_value($incident["province"] ?? null),
+    hotspot_normalize_scope_value($incident["city_municipality"] ?? null),
+    hotspot_normalize_scope_value($incident["barangay"] ?? null),
     $incident["lat"],
     $incident["lng"],
     $cfg["radius_m"],
@@ -465,20 +512,21 @@ function hotspot_unassign_from_incident(PDO $pdo, int $incidentId): void {
 
 function hotspot_refresh_incident_link(PDO $pdo, int $incidentId): void {
   $stmt = $pdo->prepare("
-    SELECT
-      id,
-      incident_type,
-      lat,
-      lng,
-      barangay,
-      city_municipality,
-      province,
-      verification_status,
-      incident_phase
-    FROM incident_reports
-    WHERE id = ?
-    LIMIT 1
-  ");
+  SELECT
+    id,
+    incident_type,
+    lat,
+    lng,
+    region,
+    barangay,
+    city_municipality,
+    province,
+    verification_status,
+    incident_phase
+  FROM incident_reports
+  WHERE id = ?
+  LIMIT 1
+");
   $stmt->execute([$incidentId]);
   $incident = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -506,7 +554,7 @@ function hotspot_refresh_incident_link(PDO $pdo, int $incidentId): void {
   }
 
   $cfg = hotspot_config();
-  $existing = hotspot_find_existing($pdo, $lat, $lng, (int)$cfg["merge_distance_m"]);
+  $existing = hotspot_find_existing($pdo, $lat, $lng, $incident, (int)$cfg["merge_distance_m"]);
 
   if ($existing) {
     hotspot_update($pdo, (int)$existing["id"], $incident, $ctx);
@@ -568,6 +616,36 @@ function hotspot_deactivate_orphan_hotspots(PDO $pdo): void {
   foreach ($ids as $id) {
     $upd->execute([(int)$id]);
   }
+}
+
+function hotspot_norm_text($value): ?string {
+  $value = trim((string)($value ?? ""));
+  return $value === "" ? null : mb_strtolower($value);
+}
+
+function hotspot_same_scope(array $hotspotRow, array $incident): bool {
+  $hProvince = hotspot_norm_text($hotspotRow["province"] ?? null);
+  $iProvince = hotspot_norm_text($incident["province"] ?? null);
+
+  if ($hProvince !== null && $iProvince !== null && $hProvince !== $iProvince) {
+    return false;
+  }
+
+  $hCity = hotspot_norm_text($hotspotRow["city_municipality"] ?? null);
+  $iCity = hotspot_norm_text($incident["city_municipality"] ?? null);
+
+  if ($hCity !== null && $iCity !== null && $hCity !== $iCity) {
+    return false;
+  }
+
+  $hBarangay = hotspot_norm_text($hotspotRow["barangay"] ?? null);
+  $iBarangay = hotspot_norm_text($incident["barangay"] ?? null);
+
+  if ($hBarangay !== null && $iBarangay !== null && $hBarangay !== $iBarangay) {
+    return false;
+  }
+
+  return true;
 }
 
 function get_users_inside_hotspot(PDO $pdo, int $hotspotId, int $locationFreshMinutes = 30): array {
