@@ -158,11 +158,21 @@ function add_city_aliases(PDO $pdo, int $cityId, string $canonical): void {
   $base = norm_alias($canonical);
   $aliases = [$base];
 
+  // Case 1: "Tangub City"
   if (str_ends_with($base, " city")) {
     $withoutCity = trim(substr($base, 0, -5));
     if ($withoutCity !== "") {
       $aliases[] = $withoutCity;
       $aliases[] = "city of " . $withoutCity;
+    }
+  }
+
+  // Case 2: "City of Tangub"
+  if (str_starts_with($base, "city of ")) {
+    $withoutPrefix = trim(substr($base, 8));
+    if ($withoutPrefix !== "") {
+      $aliases[] = $withoutPrefix;
+      $aliases[] = $withoutPrefix . " city";
     }
   }
 
@@ -240,10 +250,19 @@ try {
 
     $regionId = ensure_region($pdo, $regionName);
     $provinceId = ensure_province($pdo, $regionId, $provinceName);
-
+    
     $canonical = $name;
-    if ($type === "city" && !str_contains(strtolower($canonical), "city")) {
-      $canonical .= " City";
+    $lowerCanonical = strtolower($canonical);
+
+    if ($type === "city") {
+    if (str_starts_with($lowerCanonical, "city of ")) {
+        $bare = trim(substr($canonical, 8));
+        if ($bare !== "") {
+        $canonical = $bare . " City";
+        }
+    } elseif (!str_contains($lowerCanonical, "city")) {
+        $canonical .= " City";
+    }
     }
 
     $before = $pdo->prepare("
