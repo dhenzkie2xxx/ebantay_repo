@@ -13,15 +13,8 @@ try {
 
   $params = [];
   $where = " WHERE active = 1 ";
-  $where .= scope_location_where_clause(
-    $scope,
-    $params,
-    "province",
-    "city_municipality",
-    "barangay",
-    "region",
-    "hotspot_list"
-  );
+  $where .= scope_where_clause("province", $scope, $params, ":scope_province");
+  $where .= scope_city_where_clause("city_municipality", $scope, $params, ":scope_city");
 
   $sql = "
     SELECT

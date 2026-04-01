@@ -12,15 +12,8 @@ try {
   // -------------------------
   $hotspotParams = [];
   $hotspotWhere = " WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $hotspotWhere .= scope_location_where_clause(
-    $scope,
-    $hotspotParams,
-    "province",
-    "city_municipality",
-    "barangay",
-    "region",
-    "hotspot"
-  );
+  $hotspotWhere .= scope_where_clause("province", $scope, $hotspotParams, ":hotspot_province");
+  $hotspotWhere .= scope_city_where_clause("city_municipality", $scope, $hotspotParams, ":hotspot_city");
 
   $hotspotStmt = $pdo->prepare("
     SELECT
@@ -57,15 +50,8 @@ try {
   // -------------------------
   $panicParams = [];
   $panicWhere = " WHERE p.status IN ('new', 'ack') AND p.lat IS NOT NULL AND p.lng IS NOT NULL ";
-  $panicWhere .= scope_location_where_clause(
-    $scope,
-    $panicParams,
-    "p.province",
-    "p.city_municipality",
-    "p.barangay",
-    "p.region",
-    "panic"
-  );
+  $panicWhere .= scope_where_clause("p.province", $scope, $panicParams, ":panic_province");
+  $panicWhere .= scope_city_where_clause("p.city_municipality", $scope, $panicParams, ":panic_city");
 
   $panicStmt = $pdo->prepare("
     SELECT
@@ -106,15 +92,8 @@ try {
       AND lat IS NOT NULL
       AND lng IS NOT NULL
   ";
-  $verifiedWhere .= scope_location_where_clause(
-    $scope,
-    $verifiedParams,
-    "province",
-    "city_municipality",
-    "barangay",
-    "region",
-    "verified"
-  );
+  $verifiedWhere .= scope_where_clause("province", $scope, $verifiedParams, ":verified_province");
+  $verifiedWhere .= scope_city_where_clause("city_municipality", $scope, $verifiedParams, ":verified_city");
 
   $verifiedStmt = $pdo->prepare("
     SELECT
@@ -147,15 +126,8 @@ try {
       AND lat IS NOT NULL
       AND lng IS NOT NULL
   ";
-  $pendingWhere .= scope_location_where_clause(
-    $scope,
-    $pendingParams,
-    "province",
-    "city_municipality",
-    "barangay",
-    "region",
-    "pending"
-  );
+  $pendingWhere .= scope_where_clause("province", $scope, $pendingParams, ":pending_province");
+  $pendingWhere .= scope_city_where_clause("city_municipality", $scope, $pendingParams, ":pending_city");
 
   $pendingStmt = $pdo->prepare("
     SELECT
@@ -186,7 +158,7 @@ try {
     "hotspots" => array_map(function ($r) {
       return [
         "id" => (int)$r["id"],
-        "name" => $r["name"],
+        "name" => $r["name"] ?? null,
         "region" => $r["region"] ?? null,
         "province" => $r["province"] ?? null,
         "city_municipality" => $r["city_municipality"] ?? null,
