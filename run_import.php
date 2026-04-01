@@ -34,6 +34,10 @@ function fetch_json_or_fail(string $url): array {
     throw new RuntimeException("Invalid JSON from: {$url}");
   }
 
+  if (isset($json["data"]) && is_array($json["data"])) {
+    return $json["data"];
+  }
+
   return $json;
 }
 
@@ -160,8 +164,6 @@ function add_city_aliases(PDO $pdo, int $cityId, string $canonical): void {
       $aliases[] = $withoutCity;
       $aliases[] = "city of " . $withoutCity;
     }
-  } else {
-    $aliases[] = $base;
   }
 
   foreach (array_values(array_unique($aliases)) as $alias) {
@@ -180,13 +182,16 @@ try {
   $provinceInserted = 0;
   $cityInserted = 0;
 
-  // 1) Regions
   $regions = fetch_json_or_fail("https://psgc.cloud/api/v2/regions");
   foreach ($regions as $region) {
     $name = trim((string)($region["name"] ?? ""));
     if ($name === "") continue;
 
-    $before = $pdo->prepare("SELECT id FROM location_regions WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1");
+    $before = $pdo->prepare("
+      SELECT id FROM location_regions
+      WHERE LOWER(canonical_name)=LOWER(?)
+      LIMIT 1
+    ");
     $before->execute([$name]);
     $exists = $before->fetchColumn();
 
@@ -196,11 +201,10 @@ try {
     echo "Region: {$name}\n";
   }
 
-  // 2) Provinces
   $provinces = fetch_json_or_fail("https://psgc.cloud/api/v2/provinces");
   foreach ($provinces as $province) {
     $provinceName = trim((string)($province["name"] ?? ""));
-    $regionName = trim((string)($province["region"]["name"] ?? ""));
+    $regionName = trim((string)($province["region"] ?? ""));
 
     if ($provinceName === "" || $regionName === "") {
       continue;
@@ -208,7 +212,11 @@ try {
 
     $regionId = ensure_region($pdo, $regionName);
 
-    $before = $pdo->prepare("SELECT id FROM location_provinces WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1");
+    $before = $pdo->prepare("
+      SELECT id FROM location_provinces
+      WHERE LOWER(canonical_name)=LOWER(?)
+      LIMIT 1
+    ");
     $before->execute([$provinceName]);
     $exists = $before->fetchColumn();
 
@@ -219,13 +227,12 @@ try {
     echo "Province: {$provinceName} ({$regionName})\n";
   }
 
-  // 3) Cities & Municipalities
   $localities = fetch_json_or_fail("https://psgc.cloud/api/v2/cities-municipalities");
   foreach ($localities as $loc) {
     $name = trim((string)($loc["name"] ?? ""));
     $type = strtolower(trim((string)($loc["type"] ?? "")));
-    $provinceName = trim((string)($loc["province"]["name"] ?? ""));
-    $regionName = trim((string)($loc["region"]["name"] ?? ""));
+    $provinceName = trim((string)($loc["province"] ?? ""));
+    $regionName = trim((string)($loc["region"] ?? ""));
 
     if ($name === "" || $provinceName === "" || $regionName === "") {
       continue;
