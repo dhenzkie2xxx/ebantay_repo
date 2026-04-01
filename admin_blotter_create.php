@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/hotspot_lib.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -80,6 +81,25 @@ $region = $region !== "" ? $region : null;
 $locationType = $locationType !== "" ? $locationType : null;
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
+
+/*
+|--------------------------------------------------------------------------
+| Canonicalize province/city scope
+|--------------------------------------------------------------------------
+*/
+$canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+if (!$canon["ok"]) {
+  http_response_code(400);
+  echo json_encode([
+    "ok" => false,
+    "message" => $canon["message"]
+  ]);
+  exit;
+}
+
+$region = $canon["region"] ?? $region;
+$province = $canon["province"];
+$cityMunicipality = $canon["city_municipality"];
 
 function generate_incident_code(): string {
   return "INC-" . gmdate("Ymd-His") . "-" . substr(strtoupper(bin2hex(random_bytes(3))), 0, 6);
@@ -403,7 +423,13 @@ try {
     "incident_code" => $incidentCode,
     "blotter_entry_number" => $blotterEntryNumber,
     "irf_entry_number" => $irfEntryNumber,
-    "alert_created_count" => $alertResult["created"] ?? 0
+    "alert_created_count" => $alertResult["created"] ?? 0,
+    "scope" => [
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+      "barangay" => $barangay
+    ]
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();

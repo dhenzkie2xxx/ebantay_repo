@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -129,8 +130,8 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   ];
 }
 
-function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
-  if (!$province) return null;
+function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string $province, ?string $cityMunicipality): ?array {
+  if (!$province || !$cityMunicipality) return null;
 
   $stmt = $pdo->prepare("
     SELECT
@@ -149,8 +150,9 @@ function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?str
     WHERE verification_status = 'approved'
       AND is_active = 1
       AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
   ");
-  $stmt->execute([$province]);
+  $stmt->execute([$province, $cityMunicipality]);
   $stations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   if (!$stations) return null;
@@ -236,14 +238,26 @@ try {
   $cityMunicipality = $resolved["city_municipality"] ?? null;
   $barangay = $resolved["barangay"] ?? null;
 
-  if (!$province) {
+  if (!$province || !$cityMunicipality) {
     out(422, [
       "ok" => false,
-      "message" => "Unable to determine the province from the current location"
+      "message" => "Unable to determine the province and city/municipality from the current location"
     ]);
   }
 
-  $nearestStation = find_nearest_station_in_province($pdo, $lat, $lng, $province);
+  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+  if (!$canon["ok"]) {
+    out(422, [
+      "ok" => false,
+      "message" => $canon["message"]
+    ]);
+  }
+
+  $region = $canon["region"];
+  $province = $canon["province"];
+  $cityMunicipality = $canon["city_municipality"];
+
+  $nearestStation = find_nearest_station_in_city($pdo, $lat, $lng, $province, $cityMunicipality);
   $assignedStationId = $nearestStation ? (int)$nearestStation["id"] : null;
 
   $stmt = $pdo->prepare("

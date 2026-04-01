@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -213,11 +214,6 @@ if ($dateIncidentToSql !== null && strtotime($dateIncidentToSql) < strtotime($da
 }
 
 try {
-  /*
-  |--------------------------------------------------------------------------
-  | AUTH USER
-  |--------------------------------------------------------------------------
-  */
   $user = auth_get_user_by_token($pdo, $token);
 
   if (!$user) {
@@ -272,6 +268,18 @@ try {
       "message" => "Unable to determine complete incident location scope"
     ]);
   }
+
+  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+  if (!$canon["ok"]) {
+    out(422, [
+      "ok" => false,
+      "message" => $canon["message"]
+    ]);
+  }
+
+  $region = $canon["region"];
+  $province = $canon["province"];
+  $cityMunicipality = $canon["city_municipality"];
 
   /*
   |--------------------------------------------------------------------------
@@ -371,11 +379,6 @@ try {
 
   $pdo->beginTransaction();
 
-  /*
-  |--------------------------------------------------------------------------
-  | INSERT INCIDENT REPORT
-  |--------------------------------------------------------------------------
-  */
   $stmt = $pdo->prepare("
     INSERT INTO incident_reports (
       incident_code,
@@ -453,11 +456,6 @@ try {
 
   $incidentId = (int)$pdo->lastInsertId();
 
-  /*
-  |--------------------------------------------------------------------------
-  | INSERT REPORTING PERSON
-  |--------------------------------------------------------------------------
-  */
   $personStmt = $pdo->prepare("
     INSERT INTO incident_persons (
       incident_id,
@@ -480,11 +478,6 @@ try {
     $user["email"] ?? null
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | STATUS HISTORY
-  |--------------------------------------------------------------------------
-  */
   $statusStmt = $pdo->prepare("
     INSERT INTO incident_status_history (
       incident_id,
@@ -508,11 +501,6 @@ try {
     (int)$user["id"]
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | PHOTOS
-  |--------------------------------------------------------------------------
-  */
   if (!empty($_FILES["photos"]) && is_array($_FILES["photos"]["tmp_name"])) {
     $count = count($_FILES["photos"]["tmp_name"]);
     $max = 5;

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin_account.php";
 require_once __DIR__ . "/station_helpers.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -17,6 +18,7 @@ $required = [
   "station_name",
   "station_type",
   "region",
+  "province",
   "city_municipality",
   "full_address",
   "lat",
@@ -70,6 +72,30 @@ $contactLandline = station_nullable_string($data["contact_landline"] ?? null);
 $contactEmail = station_nullable_string($data["contact_email"] ?? null);
 $operatingHours = station_nullable_string($data["operating_hours"] ?? null);
 $emergencyContact = station_nullable_string($data["emergency_contact"] ?? null);
+
+/*
+|--------------------------------------------------------------------------
+| Canonicalize province/city scope
+|--------------------------------------------------------------------------
+*/
+if ($province === null || trim($province) === "") {
+  auth_out(400, [
+    "ok" => false,
+    "message" => "Province is required."
+  ]);
+}
+
+$canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+if (!$canon["ok"]) {
+  auth_out(400, [
+    "ok" => false,
+    "message" => $canon["message"]
+  ]);
+}
+
+$region = $canon["region"] ?? $region;
+$province = $canon["province"];
+$cityMunicipality = $canon["city_municipality"];
 
 /*
 |--------------------------------------------------------------------------
@@ -319,7 +345,13 @@ try {
     auth_out(200, [
       "ok" => true,
       "message" => "Station updated successfully.",
-      "station_id" => $stationId
+      "station_id" => $stationId,
+      "scope" => [
+        "region" => $region,
+        "province" => $province,
+        "city_municipality" => $cityMunicipality,
+        "barangay" => $barangay
+      ]
     ]);
   }
 
@@ -415,7 +447,13 @@ try {
   auth_out(200, [
     "ok" => true,
     "message" => "Station registered successfully.",
-    "station_id" => $stationId
+    "station_id" => $stationId,
+    "scope" => [
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+      "barangay" => $barangay
+    ]
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) {
