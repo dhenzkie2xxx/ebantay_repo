@@ -3,7 +3,6 @@ require_once __DIR__ . "/db.php";
 
 header("Content-Type: text/plain; charset=UTF-8");
 
-// protect this endpoint
 $secret = $_GET["key"] ?? "";
 if ($secret !== "IMPORT_2026_SECRET") {
   http_response_code(403);
@@ -38,15 +37,122 @@ function fetch_json_or_fail(string $url): array {
   return $json;
 }
 
-function normalize_alias(string $value): string {
+function norm_alias(string $value): string {
   return strtolower(trim($value));
 }
 
-function add_city_aliases(PDO $pdo, int $cityId, string $canonical): void {
-  $aliases = [];
-  $base = normalize_alias($canonical);
+function ensure_region(PDO $pdo, string $canonical): int {
+  $find = $pdo->prepare("
+    SELECT id
+    FROM location_regions
+    WHERE LOWER(canonical_name) = LOWER(?)
+    LIMIT 1
+  ");
+  $find->execute([$canonical]);
+  $id = $find->fetchColumn();
 
-  $aliases[] = $base;
+  if ($id) return (int)$id;
+
+  $ins = $pdo->prepare("
+    INSERT INTO location_regions (canonical_name)
+    VALUES (?)
+  ");
+  $ins->execute([$canonical]);
+
+  return (int)$pdo->lastInsertId();
+}
+
+function ensure_province(PDO $pdo, int $regionId, string $canonical): int {
+  $find = $pdo->prepare("
+    SELECT id
+    FROM location_provinces
+    WHERE LOWER(canonical_name) = LOWER(?)
+    LIMIT 1
+  ");
+  $find->execute([$canonical]);
+  $id = $find->fetchColumn();
+
+  if ($id) return (int)$id;
+
+  $ins = $pdo->prepare("
+    INSERT INTO location_provinces (region_id, canonical_name)
+    VALUES (?, ?)
+  ");
+  $ins->execute([$regionId, $canonical]);
+
+  return (int)$pdo->lastInsertId();
+}
+
+function ensure_city(PDO $pdo, int $provinceId, string $canonical): int {
+  $find = $pdo->prepare("
+    SELECT id
+    FROM location_cities
+    WHERE province_id = ? AND LOWER(canonical_name) = LOWER(?)
+    LIMIT 1
+  ");
+  $find->execute([$provinceId, $canonical]);
+  $id = $find->fetchColumn();
+
+  if ($id) return (int)$id;
+
+  $ins = $pdo->prepare("
+    INSERT INTO location_cities (province_id, canonical_name)
+    VALUES (?, ?)
+  ");
+  $ins->execute([$provinceId, $canonical]);
+
+  return (int)$pdo->lastInsertId();
+}
+
+function ensure_province_alias(PDO $pdo, int $provinceId, string $alias): void {
+  $find = $pdo->prepare("
+    SELECT id
+    FROM location_province_aliases
+    WHERE province_id = ? AND LOWER(alias_name) = LOWER(?)
+    LIMIT 1
+  ");
+  $find->execute([$provinceId, $alias]);
+  if ($find->fetchColumn()) return;
+
+  $ins = $pdo->prepare("
+    INSERT INTO location_province_aliases (province_id, alias_name)
+    VALUES (?, ?)
+  ");
+  $ins->execute([$provinceId, $alias]);
+}
+
+function ensure_city_alias(PDO $pdo, int $cityId, string $alias): void {
+  $find = $pdo->prepare("
+    SELECT id
+    FROM location_city_aliases
+    WHERE city_id = ? AND LOWER(alias_name) = LOWER(?)
+    LIMIT 1
+  ");
+  $find->execute([$cityId, $alias]);
+  if ($find->fetchColumn()) return;
+
+  $ins = $pdo->prepare("
+    INSERT INTO location_city_aliases (city_id, alias_name)
+    VALUES (?, ?)
+  ");
+  $ins->execute([$cityId, $alias]);
+}
+
+function add_province_aliases(PDO $pdo, int $provinceId, string $canonical): void {
+  $aliases = [
+    norm_alias($canonical)
+  ];
+
+  foreach (array_values(array_unique($aliases)) as $alias) {
+    if ($alias !== "") {
+      ensure_province_alias($pdo, $provinceId, $alias);
+    }
+  }
+}
+
+function add_city_aliases(PDO $pdo, int $cityId, string $canonical): void {
+  $base = norm_alias($canonical);
+  $aliases = [$base];
 
   if (str_ends_with($base, " city")) {
     $withoutCity = trim(substr($base, 0, -5));
@@ -58,46 +164,9 @@ function add_city_aliases(PDO $pdo, int $cityId, string $canonical): void {
     $aliases[] = $base;
   }
 
-  $aliases = array_values(array_unique(array_filter($aliases)));
-
-  $stmt = $pdo->prepare("
-    INSERT INTO location_city_aliases (city_id, alias_name)
-    VALUES (?, ?)
-  ");
-
-  foreach ($aliases as $alias) {
-    $check = $pdo->prepare("
-      SELECT id
-      FROM location_city_aliases
-      WHERE city_id = ? AND LOWER(alias_name) = LOWER(?)
-      LIMIT 1
-    ");
-    $check->execute([$cityId, $alias]);
-    if (!$check->fetchColumn()) {
-      $stmt->execute([$cityId, $alias]);
-    }
-  }
-}
-
-function add_province_aliases(PDO $pdo, int $provinceId, string $canonical): void {
-  $aliases = [normalize_alias($canonical)];
-  $aliases = array_values(array_unique($aliases));
-
-  $stmt = $pdo->prepare("
-    INSERT INTO location_province_aliases (province_id, alias_name)
-    VALUES (?, ?)
-  ");
-
-  foreach ($aliases as $alias) {
-    $check = $pdo->prepare("
-      SELECT id
-      FROM location_province_aliases
-      WHERE province_id = ? AND LOWER(alias_name) = LOWER(?)
-      LIMIT 1
-    ");
-    $check->execute([$provinceId, $alias]);
-    if (!$check->fetchColumn()) {
-      $stmt->execute([$provinceId, $alias]);
+  foreach (array_values(array_unique($aliases)) as $alias) {
+    if ($alias !== "") {
+      ensure_city_alias($pdo, $cityId, $alias);
     }
   }
 }
@@ -107,123 +176,89 @@ try {
 
   $pdo->beginTransaction();
 
+  $regionInserted = 0;
+  $provinceInserted = 0;
+  $cityInserted = 0;
+
   // 1) Regions
-  $regions = fetch_json_or_fail("https://psgc.cloud/api/regions");
-  $insertRegion = $pdo->prepare("
-    INSERT INTO location_regions (canonical_name)
-    VALUES (?)
-  ");
-  $findRegion = $pdo->prepare("
-    SELECT id FROM location_regions
-    WHERE LOWER(canonical_name) = LOWER(?)
-    LIMIT 1
-  ");
-
-  $insertProvince = $pdo->prepare("
-    INSERT INTO location_provinces (region_id, canonical_name)
-    VALUES (?, ?)
-  ");
-  $findProvince = $pdo->prepare("
-    SELECT id FROM location_provinces
-    WHERE region_id = ? AND LOWER(canonical_name) = LOWER(?)
-    LIMIT 1
-  ");
-
-  $insertCity = $pdo->prepare("
-    INSERT INTO location_cities (province_id, canonical_name)
-    VALUES (?, ?)
-  ");
-  $findCity = $pdo->prepare("
-    SELECT id FROM location_cities
-    WHERE province_id = ? AND LOWER(canonical_name) = LOWER(?)
-    LIMIT 1
-  ");
-
-  $regionCount = 0;
-  $provinceCount = 0;
-  $cityCount = 0;
-
+  $regions = fetch_json_or_fail("https://psgc.cloud/api/v2/regions");
   foreach ($regions as $region) {
-    $regionName = trim((string)($region["name"] ?? ""));
-    if ($regionName === "") continue;
+    $name = trim((string)($region["name"] ?? ""));
+    if ($name === "") continue;
 
-    $findRegion->execute([$regionName]);
-    $regionId = $findRegion->fetchColumn();
+    $before = $pdo->prepare("SELECT id FROM location_regions WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1");
+    $before->execute([$name]);
+    $exists = $before->fetchColumn();
 
-    if (!$regionId) {
-      $insertRegion->execute([$regionName]);
-      $regionId = (int)$pdo->lastInsertId();
-      $regionCount++;
-    } else {
-      $regionId = (int)$regionId;
+    ensure_region($pdo, $name);
+    if (!$exists) $regionInserted++;
+
+    echo "Region: {$name}\n";
+  }
+
+  // 2) Provinces
+  $provinces = fetch_json_or_fail("https://psgc.cloud/api/v2/provinces");
+  foreach ($provinces as $province) {
+    $provinceName = trim((string)($province["name"] ?? ""));
+    $regionName = trim((string)($province["region"]["name"] ?? ""));
+
+    if ($provinceName === "" || $regionName === "") {
+      continue;
     }
 
-    echo "Region: {$regionName}\n";
+    $regionId = ensure_region($pdo, $regionName);
 
-    // 2) Provinces under this region
-    $regionEncoded = rawurlencode($regionName);
-    $provinces = fetch_json_or_fail("https://psgc.cloud/api/v2/regions/{$regionEncoded}/provinces");
+    $before = $pdo->prepare("SELECT id FROM location_provinces WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1");
+    $before->execute([$provinceName]);
+    $exists = $before->fetchColumn();
 
-    foreach ($provinces as $province) {
-      $provinceName = trim((string)($province["name"] ?? ""));
-      if ($provinceName === "") continue;
+    $provinceId = ensure_province($pdo, $regionId, $provinceName);
+    if (!$exists) $provinceInserted++;
 
-      $findProvince->execute([$regionId, $provinceName]);
-      $provinceId = $findProvince->fetchColumn();
+    add_province_aliases($pdo, $provinceId, $provinceName);
+    echo "Province: {$provinceName} ({$regionName})\n";
+  }
 
-      if (!$provinceId) {
-        $insertProvince->execute([$regionId, $provinceName]);
-        $provinceId = (int)$pdo->lastInsertId();
-        $provinceCount++;
-      } else {
-        $provinceId = (int)$provinceId;
-      }
+  // 3) Cities & Municipalities
+  $localities = fetch_json_or_fail("https://psgc.cloud/api/v2/cities-municipalities");
+  foreach ($localities as $loc) {
+    $name = trim((string)($loc["name"] ?? ""));
+    $type = strtolower(trim((string)($loc["type"] ?? "")));
+    $provinceName = trim((string)($loc["province"]["name"] ?? ""));
+    $regionName = trim((string)($loc["region"]["name"] ?? ""));
 
-      add_province_aliases($pdo, $provinceId, $provinceName);
-
-      echo "  Province: {$provinceName}\n";
-
-      // 3) Cities & municipalities under this province within this region
-      $provinceEncoded = rawurlencode($provinceName);
-      $localities = fetch_json_or_fail("https://psgc.cloud/api/v2/regions/{$regionEncoded}/provinces/{$provinceEncoded}/cities-municipalities");
-
-      foreach ($localities as $loc) {
-        $localityName = trim((string)($loc["name"] ?? ""));
-        $type = strtolower(trim((string)($loc["type"] ?? "")));
-
-        if ($localityName === "") continue;
-
-        $canonical = $localityName;
-
-        if ($type === "city") {
-          $lower = strtolower($canonical);
-          if (!str_contains($lower, "city")) {
-            $canonical .= " City";
-          }
-        }
-
-        $findCity->execute([$provinceId, $canonical]);
-        $cityId = $findCity->fetchColumn();
-
-        if (!$cityId) {
-          $insertCity->execute([$provinceId, $canonical]);
-          $cityId = (int)$pdo->lastInsertId();
-          $cityCount++;
-        } else {
-          $cityId = (int)$cityId;
-        }
-
-        add_city_aliases($pdo, $cityId, $canonical);
-      }
+    if ($name === "" || $provinceName === "" || $regionName === "") {
+      continue;
     }
+
+    $regionId = ensure_region($pdo, $regionName);
+    $provinceId = ensure_province($pdo, $regionId, $provinceName);
+
+    $canonical = $name;
+    if ($type === "city" && !str_contains(strtolower($canonical), "city")) {
+      $canonical .= " City";
+    }
+
+    $before = $pdo->prepare("
+      SELECT id FROM location_cities
+      WHERE province_id = ? AND LOWER(canonical_name)=LOWER(?)
+      LIMIT 1
+    ");
+    $before->execute([$provinceId, $canonical]);
+    $exists = $before->fetchColumn();
+
+    $cityId = ensure_city($pdo, $provinceId, $canonical);
+    if (!$exists) $cityInserted++;
+
+    add_city_aliases($pdo, $cityId, $canonical);
   }
 
   $pdo->commit();
 
   echo "\nImport completed successfully.\n";
-  echo "New regions inserted: {$regionCount}\n";
-  echo "New provinces inserted: {$provinceCount}\n";
-  echo "New cities/municipalities inserted: {$cityCount}\n";
+  echo "New regions inserted: {$regionInserted}\n";
+  echo "New provinces inserted: {$provinceInserted}\n";
+  echo "New cities/municipalities inserted: {$cityInserted}\n";
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) {
     $pdo->rollBack();
