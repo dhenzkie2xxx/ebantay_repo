@@ -15,6 +15,10 @@ try {
   if ($limit < 1) $limit = 80;
   if ($limit > 200) $limit = 200;
 
+  $page = (int)($_GET["page"] ?? 1);
+  if ($page < 1) $page = 1;
+  $offset = ($page - 1) * $limit;
+
   $stationId = isset($scope["station_id"]) ? (int)$scope["station_id"] : 0;
   if (empty($scope["is_global"]) && $stationId <= 0) {
     http_response_code(403);
@@ -38,6 +42,23 @@ try {
     $params[":status"] = $status;
   }
 
+  $countSql = "
+    SELECT COUNT(*) AS total
+    FROM panic_requests p
+    $where
+  ";
+
+  $countStmt = $pdo->prepare($countSql);
+  foreach ($params as $k => $v) {
+    if ($k === ":station_id") {
+      $countStmt->bindValue($k, (int)$v, PDO::PARAM_INT);
+    } else {
+      $countStmt->bindValue($k, $v);
+    }
+  }
+  $countStmt->execute();
+  $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
+
   $stmt = $pdo->prepare("
     SELECT
       p.id,
@@ -48,6 +69,7 @@ try {
       p.device_time,
       p.created_at,
       p.status,
+      p.region,
       p.province,
       p.city_municipality,
       p.barangay,
@@ -62,8 +84,9 @@ try {
     LEFT JOIN police_stations ps ON ps.id = p.assigned_station_id
     $where
     ORDER BY p.created_at DESC
-    LIMIT $limit
+    LIMIT :limit OFFSET :offset
   ");
+
   foreach ($params as $k => $v) {
     if ($k === ":station_id") {
       $stmt->bindValue($k, (int)$v, PDO::PARAM_INT);
@@ -71,13 +94,22 @@ try {
       $stmt->bindValue($k, $v);
     }
   }
+  $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
+  $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
   $stmt->execute();
+
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   echo json_encode([
     "ok" => true,
     "scope" => $scope,
     "status" => $status,
+    "pagination" => [
+      "page" => $page,
+      "limit" => $limit,
+      "total" => $total,
+      "total_pages" => $limit > 0 ? (int)ceil($total / $limit) : 1
+    ],
     "panic" => array_map(function($r) {
       return [
         "id" => (int)$r["id"],
@@ -88,6 +120,7 @@ try {
         "device_time" => $r["device_time"],
         "created_at" => $r["created_at"],
         "status" => $r["status"],
+        "region" => $r["region"] ?? null,
         "province" => $r["province"] ?? null,
         "city_municipality" => $r["city_municipality"] ?? null,
         "barangay" => $r["barangay"] ?? null,
@@ -96,7 +129,7 @@ try {
         "assigned_station_code" => $r["assigned_station_code"] ?? null,
         "user" => [
           "name" => trim(($r["firstname"] ?? "") . " " . ($r["lastname"] ?? "")),
-          "email" => $r["email"]
+          "email" => $r["email"] ?? null
         ]
       ];
     }, $rows)
