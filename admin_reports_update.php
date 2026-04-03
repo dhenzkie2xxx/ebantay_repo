@@ -9,11 +9,6 @@ function out($code, $payload) {
   exit;
 }
 
-function normalize_scope_value($value): ?string {
-  $value = trim((string)($value ?? ""));
-  return $value === "" ? null : $value;
-}
-
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
@@ -49,13 +44,13 @@ if (
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
 $role = (string)($AUTH_USER["role"] ?? "");
-$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+$stationId = isset($AUTH_USER["station_id"]) ? (int)$AUTH_USER["station_id"] : 0;
 $now = gmdate("Y-m-d H:i:s");
 
-if ($role === "admin" && !$stationProvince) {
+if ($role === "admin" && $stationId <= 0) {
   out(403, [
     "ok" => false,
-    "message" => "Admin station province is not configured."
+    "message" => "Admin station is not configured."
   ]);
 }
 
@@ -113,7 +108,8 @@ try {
       incident_phase,
       case_status,
       reviewed_at,
-      province
+      province,
+      assigned_station_id
     FROM incident_reports
     WHERE id = ?
     LIMIT 1
@@ -131,12 +127,12 @@ try {
 
   if (
     $role === "admin" &&
-    strtolower(trim((string)($old["province"] ?? ""))) !== strtolower($stationProvince)
+    (int)($old["assigned_station_id"] ?? 0) !== $stationId
   ) {
     $pdo->rollBack();
     out(403, [
       "ok" => false,
-      "message" => "You are not allowed to update incidents outside your province."
+      "message" => "You are not allowed to update incidents outside your station assignment."
     ]);
   }
 
@@ -241,7 +237,8 @@ try {
     "message" => "Incident updated successfully",
     "scope" => [
       "role" => $role,
-      "station_province" => $role === "admin" ? $stationProvince : null,
+      "station_id" => $role === "admin" ? $stationId : null,
+      "assigned_station_id" => $old["assigned_station_id"] !== null ? (int)$old["assigned_station_id"] : null,
       "incident_province" => $old["province"] ?? null
     ]
   ]);

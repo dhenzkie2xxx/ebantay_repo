@@ -2,6 +2,7 @@
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/location_resolver.php";
+require_once __DIR__ . "/station_assignment_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -30,18 +31,6 @@ function parse_device_time_to_sql($value): ?string {
   return date("Y-m-d H:i:s", $ts);
 }
 
-function haversineMeters($lat1, $lng1, $lat2, $lng2): float {
-  $earth = 6371000;
-  $dLat = deg2rad($lat2 - $lat1);
-  $dLng = deg2rad($lng2 - $lng1);
-
-  $a = sin($dLat / 2) * sin($dLat / 2)
-     + cos(deg2rad($lat1)) * cos(deg2rad($lat2))
-     * sin($dLng / 2) * sin($dLng / 2);
-
-  return 2 * $earth * asin(min(1, sqrt($a)));
-}
-
 function reverse_geocode_scope(float $lat, float $lng): array {
   $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
     . urlencode((string)$lat)
@@ -60,6 +49,7 @@ function reverse_geocode_scope(float $lat, float $lng): array {
 
   $context = stream_context_create($opts);
   $raw = @file_get_contents($url, false, $context);
+
   if ($raw === false) {
     return [
       "ok" => false,
@@ -130,50 +120,6 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   ];
 }
 
-function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string $province, ?string $cityMunicipality): ?array {
-  if (!$province || !$cityMunicipality) return null;
-
-  $stmt = $pdo->prepare("
-    SELECT
-      id,
-      station_name,
-      station_code,
-      station_type,
-      region,
-      province,
-      city_municipality,
-      barangay,
-      full_address,
-      lat,
-      lng
-    FROM police_stations
-    WHERE verification_status = 'approved'
-      AND is_active = 1
-      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
-      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
-  ");
-  $stmt->execute([$province, $cityMunicipality]);
-  $stations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-  if (!$stations) return null;
-
-  $nearest = null;
-  $nearestDistance = null;
-
-  foreach ($stations as $station) {
-    $d = haversineMeters($lat, $lng, (float)$station["lat"], (float)$station["lng"]);
-    if ($nearestDistance === null || $d < $nearestDistance) {
-      $nearestDistance = $d;
-      $nearest = $station;
-    }
-  }
-
-  if (!$nearest) return null;
-
-  $nearest["distance_m"] = (int)round($nearestDistance);
-  return $nearest;
-}
-
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
@@ -221,6 +167,13 @@ try {
     out(403, ["ok" => false, "message" => "Email not verified"]);
   }
 
+  if (($user["valid"] ?? "") !== "valid") {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is not yet activated. Please complete account setup or contact the administrator."
+    ]);
+  }
+
   $deviceTimeSql = parse_device_time_to_sql($deviceTime);
   $accuracySql = ($accuracy !== null && is_numeric($accuracy)) ? (int)round((float)$accuracy) : null;
 
@@ -257,8 +210,9 @@ try {
   $province = $canon["province"];
   $cityMunicipality = $canon["city_municipality"];
 
-  $nearestStation = find_nearest_station_in_city($pdo, $lat, $lng, $province, $cityMunicipality);
-  $assignedStationId = $nearestStation ? (int)$nearestStation["id"] : null;
+  $assignedStation = assign_panic_station($pdo, $lat, $lng, $province);
+  $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
+  $assignmentRule = $assignedStation["_assignment_rule"] ?? "PROVINCE_NEAREST";
 
   $stmt = $pdo->prepare("
     INSERT INTO panic_requests (
@@ -302,16 +256,20 @@ try {
       "city_municipality" => $cityMunicipality,
       "barangay" => $barangay
     ],
-    "assigned_station" => $nearestStation ? [
-      "id" => (int)$nearestStation["id"],
-      "station_name" => $nearestStation["station_name"],
-      "station_code" => $nearestStation["station_code"],
-      "station_type" => $nearestStation["station_type"],
-      "province" => $nearestStation["province"],
-      "city_municipality" => $nearestStation["city_municipality"],
-      "barangay" => $nearestStation["barangay"],
-      "full_address" => $nearestStation["full_address"],
-      "distance_m" => (int)$nearestStation["distance_m"]
+    "assignment" => [
+      "rule" => $assignmentRule,
+      "assigned_station_id" => $assignedStationId
+    ],
+    "assigned_station" => $assignedStation ? [
+      "id" => (int)$assignedStation["id"],
+      "station_name" => $assignedStation["station_name"] ?? null,
+      "station_code" => $assignedStation["station_code"] ?? null,
+      "station_type" => $assignedStation["station_type"] ?? null,
+      "province" => $assignedStation["province"] ?? null,
+      "city_municipality" => $assignedStation["city_municipality"] ?? null,
+      "barangay" => $assignedStation["barangay"] ?? null,
+      "full_address" => $assignedStation["full_address"] ?? null,
+      "distance_m" => isset($assignedStation["distance_m"]) ? (int)$assignedStation["distance_m"] : null
     ] : null
   ]);
 

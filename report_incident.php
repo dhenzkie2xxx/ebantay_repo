@@ -2,6 +2,7 @@
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/location_resolver.php";
+require_once __DIR__ . "/station_assignment_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -366,6 +367,15 @@ try {
 
   /*
   |--------------------------------------------------------------------------
+  | ASSIGN INCIDENT STATION
+  |--------------------------------------------------------------------------
+  */
+  $assignedStation = assign_incident_station($pdo, $lat, $lng, $province, $cityMunicipality);
+  $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
+  $assignmentRule = $assignedStation["_assignment_rule"] ?? null;
+
+  /*
+  |--------------------------------------------------------------------------
   | REPORT DELAY
   |--------------------------------------------------------------------------
   */
@@ -401,6 +411,7 @@ try {
       city_municipality,
       province,
       region,
+      assigned_station_id,
       lat,
       lng,
       accuracy_m,
@@ -418,7 +429,7 @@ try {
       created_at,
       updated_at
     ) VALUES (
-      ?, ?, 'mobile_app', 'mobile', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GPS',
+      ?, ?, 'mobile_app', 'mobile', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GPS',
       ?, ?, ?, ?, ?, 'REPORTED', 'PENDING', 'OPEN', ?, ?, NOW(), NOW()
     )
   ");
@@ -442,6 +453,7 @@ try {
     $cityMunicipality,
     $province,
     $region,
+    $assignedStationId,
     $lat,
     $lng,
     $accuracy,
@@ -544,46 +556,44 @@ try {
       }
       if (!$mime) $mime = $_FILES["photos"]["type"][$i] ?? "application/octet-stream";
 
-      if (strpos($mime, "image/") !== 0) continue;
+      $imageData = @file_get_contents($tmp);
+      if ($imageData === false || $imageData === "") continue;
 
-      $maxBytes = 6 * 1024 * 1024;
-      if ($size > $maxBytes) continue;
+      $thumbData = null;
+      $thumbMime = $mime;
 
-      $bytes = file_get_contents($tmp);
-      if ($bytes === false || $bytes === "") continue;
-
-      $sha = hash("sha256", $bytes);
-
-      $thumbBytes = null;
-      $thumbMime = null;
-
-      if (extension_loaded("gd")) {
-        $srcImg = @imagecreatefromstring($bytes);
-        if ($srcImg !== false) {
-          $w = imagesx($srcImg);
-          $h = imagesy($srcImg);
-
+      if (function_exists("imagecreatefromstring")) {
+        $src = @imagecreatefromstring($imageData);
+        if ($src !== false) {
+          $srcW = imagesx($src);
+          $srcH = imagesy($src);
           $maxW = 480;
-          $scale = $w > 0 ? min(1, $maxW / $w) : 1;
-          $tw = (int)max(1, round($w * $scale));
-          $th = (int)max(1, round($h * $scale));
+          $maxH = 480;
 
-          $dstImg = imagecreatetruecolor($tw, $th);
-          imagealphablending($dstImg, false);
-          imagesavealpha($dstImg, true);
+          $ratio = min($maxW / max(1, $srcW), $maxH / max(1, $srcH), 1);
+          $newW = max(1, (int)round($srcW * $ratio));
+          $newH = max(1, (int)round($srcH * $ratio));
 
-          imagecopyresampled($dstImg, $srcImg, 0, 0, 0, 0, $tw, $th, $w, $h);
+          $dst = imagecreatetruecolor($newW, $newH);
+          imagealphablending($dst, false);
+          imagesavealpha($dst, true);
+
+          $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127);
+          imagefill($dst, 0, 0, $transparent);
+
+          imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
 
           ob_start();
-          imagejpeg($dstImg, null, 75);
-          $thumbBytes = ob_get_clean();
+          imagejpeg($dst, null, 82);
+          $thumbData = ob_get_clean();
           $thumbMime = "image/jpeg";
 
-          imagedestroy($dstImg);
-          imagedestroy($srcImg);
+          imagedestroy($dst);
+          imagedestroy($src);
         }
       }
 
+      $sha256 = hash("sha256", $imageData);
       $capturedAt = $deviceTimeSql ?: $dateReportedSql;
 
       $photoStmt->execute([
@@ -591,10 +601,10 @@ try {
         $mime,
         $name,
         $size,
-        $bytes,
-        $thumbBytes,
+        $imageData,
+        $thumbData,
         $thumbMime,
-        $sha,
+        $sha256,
         $capturedAt
       ]);
     }
@@ -604,22 +614,41 @@ try {
 
   out(200, [
     "ok" => true,
-    "message" => "Report submitted successfully",
+    "message" => "Incident reported successfully",
     "incident_id" => $incidentId,
     "incident_code" => $incidentCode,
-    "risk_status" => $riskStatus,
-    "risk_distance_m" => $riskDistanceM,
-    "risk_radius_m" => $riskRadiusM,
-    "is_hotspot_related" => $isHotspotRelated,
     "scope" => [
+      "source" => $scopeSource,
       "region" => $region,
       "province" => $province,
       "city_municipality" => $cityMunicipality,
       "barangay" => $barangay,
-      "place_of_incident" => $placeOfIncident,
-      "scope_source" => $scopeSource
+      "place_of_incident" => $placeOfIncident
+    ],
+    "assignment" => [
+      "assigned_station_id" => $assignedStationId,
+      "rule" => $assignmentRule,
+      "station" => $assignedStation ? [
+        "id" => (int)$assignedStation["id"],
+        "station_name" => $assignedStation["station_name"] ?? null,
+        "station_code" => $assignedStation["station_code"] ?? null,
+        "station_type" => $assignedStation["station_type"] ?? null,
+        "province" => $assignedStation["province"] ?? null,
+        "city_municipality" => $assignedStation["city_municipality"] ?? null,
+        "barangay" => $assignedStation["barangay"] ?? null,
+        "full_address" => $assignedStation["full_address"] ?? null,
+        "distance_m" => isset($assignedStation["distance_m"]) ? (int)$assignedStation["distance_m"] : null
+      ] : null
+    ],
+    "risk" => [
+      "status" => $riskStatus,
+      "distance_m" => $riskDistanceM,
+      "radius_m" => $riskRadiusM,
+      "hotspot_id" => $hotspotId,
+      "is_hotspot_related" => $isHotspotRelated
     ]
   ]);
+
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) {
     $pdo->rollBack();

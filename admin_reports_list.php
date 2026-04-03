@@ -9,11 +9,6 @@ function out($code, $payload) {
   exit;
 }
 
-function normalize_scope_value($value): ?string {
-  $value = trim((string)($value ?? ""));
-  return $value === "" ? null : $value;
-}
-
 $verification_status = strtoupper(trim($_GET["status"] ?? "ALL"));
 $allowed = ["ALL", "PENDING", "VERIFIED", "FALSE_REPORT", "DUPLICATE"];
 if (!in_array($verification_status, $allowed, true)) $verification_status = "ALL";
@@ -30,12 +25,12 @@ $q = trim($_GET["q"] ?? "");
 $category = trim($_GET["category"] ?? "");
 
 $role = (string)($AUTH_USER["role"] ?? "");
-$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+$stationId = isset($AUTH_USER["station_id"]) ? (int)$AUTH_USER["station_id"] : 0;
 
-if ($role === "admin" && !$stationProvince) {
+if ($role === "admin" && $stationId <= 0) {
   out(403, [
     "ok" => false,
-    "message" => "Admin station province is not configured."
+    "message" => "Admin station is not configured."
   ]);
 }
 
@@ -43,8 +38,8 @@ $where = " WHERE 1=1 ";
 $params = [];
 
 if ($role === "admin") {
-  $where .= " AND LOWER(TRIM(r.province)) = LOWER(TRIM(:station_province)) ";
-  $params[":station_province"] = $stationProvince;
+  $where .= " AND r.assigned_station_id = :station_id ";
+  $params[":station_id"] = $stationId;
 }
 
 if ($verification_status !== "ALL") {
@@ -83,7 +78,11 @@ $countSql = "
 
 $countStmt = $pdo->prepare($countSql);
 foreach ($params as $k => $v) {
-  $countStmt->bindValue($k, $v);
+  if ($k === ":station_id") {
+    $countStmt->bindValue($k, (int)$v, PDO::PARAM_INT);
+  } else {
+    $countStmt->bindValue($k, $v);
+  }
 }
 $countStmt->execute();
 $total = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
@@ -101,6 +100,9 @@ $listSql = "
     r.risk_radius_m,
     r.is_hotspot_related,
     r.hotspot_id,
+    r.assigned_station_id,
+    ps.station_name AS assigned_station_name,
+    ps.station_code AS assigned_station_code,
     r.lat,
     r.lng,
     r.barangay,
@@ -127,6 +129,7 @@ $listSql = "
     ) AS photo_count
   FROM incident_reports r
   LEFT JOIN users u ON u.id = r.reporter_user_id
+  LEFT JOIN police_stations ps ON ps.id = r.assigned_station_id
   $where
   ORDER BY r.created_at DESC
   LIMIT :limit OFFSET :offset
@@ -134,7 +137,11 @@ $listSql = "
 
 $stmt = $pdo->prepare($listSql);
 foreach ($params as $k => $v) {
-  $stmt->bindValue($k, $v);
+  if ($k === ":station_id") {
+    $stmt->bindValue($k, (int)$v, PDO::PARAM_INT);
+  } else {
+    $stmt->bindValue($k, $v);
+  }
 }
 $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
 $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
@@ -144,31 +151,40 @@ $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 echo json_encode([
   "ok" => true,
-  "status" => $verification_status,
-  "page" => $page,
-  "limit" => $limit,
-  "total" => $total,
+  "filters" => [
+    "status" => $verification_status,
+    "category" => $category,
+    "q" => $q,
+    "page" => $page,
+    "limit" => $limit
+  ],
   "scope" => [
     "role" => $role,
-    "station_province" => $role === "admin" ? $stationProvince : null,
+    "station_id" => $role === "admin" ? $stationId : null,
     "is_global" => $role === "super_admin"
   ],
-  "reports" => array_map(function ($r) {
+  "pagination" => [
+    "page" => $page,
+    "limit" => $limit,
+    "total" => $total,
+    "total_pages" => $limit > 0 ? (int)ceil($total / $limit) : 1
+  ],
+  "reports" => array_map(function($r) {
     return [
       "id" => (int)$r["id"],
       "incident_code" => $r["incident_code"],
       "title" => $r["title"],
-      "category" => $r["incident_type"],
+      "incident_type" => $r["incident_type"],
       "crime_category" => $r["crime_category"],
-      "description" => $r["narrative"],
-      "verification_status" => $r["verification_status"],
-      "incident_phase" => $r["incident_phase"],
-      "case_status" => $r["case_status"],
+      "narrative" => $r["narrative"],
       "risk_status" => $r["risk_status"],
       "risk_distance_m" => $r["risk_distance_m"] !== null ? (int)$r["risk_distance_m"] : null,
       "risk_radius_m" => $r["risk_radius_m"] !== null ? (int)$r["risk_radius_m"] : null,
       "is_hotspot_related" => (int)$r["is_hotspot_related"],
       "hotspot_id" => $r["hotspot_id"] !== null ? (int)$r["hotspot_id"] : null,
+      "assigned_station_id" => $r["assigned_station_id"] !== null ? (int)$r["assigned_station_id"] : null,
+      "assigned_station_name" => $r["assigned_station_name"],
+      "assigned_station_code" => $r["assigned_station_code"],
       "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
       "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
       "barangay" => $r["barangay"],
@@ -178,10 +194,13 @@ echo json_encode([
       "created_at" => $r["created_at"],
       "date_reported" => $r["date_reported"],
       "date_incident_from" => $r["date_incident_from"],
+      "verification_status" => $r["verification_status"],
+      "incident_phase" => $r["incident_phase"],
+      "case_status" => $r["case_status"],
       "admin_notes" => $r["admin_notes"],
       "reviewed_at" => $r["reviewed_at"],
       "resolved_at" => $r["resolved_at"],
-      "photo_count" => (int)($r["photo_count"] ?? 0),
+      "photo_count" => (int)$r["photo_count"],
       "reporter" => [
         "id" => $r["user_id"] !== null ? (int)$r["user_id"] : null,
         "firstname" => $r["firstname"],

@@ -9,11 +9,6 @@ function out($code, $payload) {
   exit;
 }
 
-function normalize_scope_value($value): ?string {
-  $value = trim((string)($value ?? ""));
-  return $value === "" ? null : $value;
-}
-
 $data = json_decode(file_get_contents("php://input"), true);
 $id = (int)($data["id"] ?? 0);
 $status = strtolower(trim((string)($data["status"] ?? "")));
@@ -24,12 +19,12 @@ if ($id <= 0 || !in_array($status, $allowed, true)) {
 }
 
 $role = (string)($AUTH_USER["role"] ?? "");
-$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+$stationId = isset($AUTH_USER["station_id"]) ? (int)$AUTH_USER["station_id"] : 0;
 
-if ($role === "admin" && !$stationProvince) {
+if ($role === "admin" && $stationId <= 0) {
   out(403, [
     "ok" => false,
-    "message" => "Admin station province is not configured."
+    "message" => "Admin station is not configured."
   ]);
 }
 
@@ -100,12 +95,12 @@ try {
 
   if (
     $role === "admin" &&
-    strtolower(trim((string)($old["province"] ?? ""))) !== strtolower($stationProvince)
+    (int)($old["assigned_station_id"] ?? 0) !== $stationId
   ) {
     $pdo->rollBack();
     out(403, [
       "ok" => false,
-      "message" => "You are not allowed to update panic requests outside your province."
+      "message" => "You are not allowed to update panic requests outside your station assignment."
     ]);
   }
 
@@ -117,23 +112,20 @@ try {
   $stmt->execute([$status, $id]);
 
   $oldStatus = strtolower((string)($old["status"] ?? ""));
-  $userId = (int)($old["user_id"] ?? 0);
-
-  if ($userId > 0 && $oldStatus !== $status) {
-    $panicLevel = strtoupper(trim((string)($old["level"] ?? "ALERT")));
-    $title = "Panic Request Update";
-    $message = "Your panic request ({$panicLevel}) is now marked as " . strtoupper($status) . ".";
+  if ($oldStatus !== $status && (int)($old["user_id"] ?? 0) > 0) {
+    $panicTitle = "Panic Request Update";
+    $panicMessage = "Your panic request was updated to status: " . strtoupper($status) . ".";
 
     $severity = "HIGH";
-    if ($status === "resolved") $severity = "LOW";
     if ($status === "ack") $severity = "MEDIUM";
+    if ($status === "resolved") $severity = "LOW";
 
     queue_user_notification(
       $pdo,
-      $userId,
+      (int)$old["user_id"],
       "PANIC_STATUS",
-      $title,
-      $message,
+      $panicTitle,
+      $panicMessage,
       null,
       null,
       $severity
@@ -144,10 +136,11 @@ try {
 
   out(200, [
     "ok" => true,
-    "message" => "Updated",
+    "message" => "Panic request updated successfully",
     "scope" => [
       "role" => $role,
-      "station_province" => $role === "admin" ? $stationProvince : null,
+      "station_id" => $role === "admin" ? $stationId : null,
+      "assigned_station_id" => $old["assigned_station_id"] !== null ? (int)$old["assigned_station_id"] : null,
       "panic_province" => $old["province"] ?? null
     ]
   ]);

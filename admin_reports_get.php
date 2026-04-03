@@ -9,35 +9,33 @@ function out($code, $payload) {
   exit;
 }
 
-function normalize_scope_value($value): ?string {
-  $value = trim((string)($value ?? ""));
-  return $value === "" ? null : $value;
-}
-
 $id = (int)($_GET["id"] ?? 0);
 if ($id <= 0) {
   out(400, ["ok" => false, "message" => "Missing id"]);
 }
 
 $role = (string)($AUTH_USER["role"] ?? "");
-$stationProvince = normalize_scope_value($AUTH_USER["station_province"] ?? null);
+$stationId = isset($AUTH_USER["station_id"]) ? (int)$AUTH_USER["station_id"] : 0;
 
-if ($role === "admin" && !$stationProvince) {
+if ($role === "admin" && $stationId <= 0) {
   out(403, [
     "ok" => false,
-    "message" => "Admin station province is not configured."
+    "message" => "Admin station is not configured."
   ]);
 }
 
 $sql = "
   SELECT
     r.*,
+    ps.station_name AS assigned_station_name,
+    ps.station_code AS assigned_station_code,
     u.firstname,
     u.lastname,
     u.email,
     u.username
   FROM incident_reports r
   LEFT JOIN users u ON u.id = r.reporter_user_id
+  LEFT JOIN police_stations ps ON ps.id = r.assigned_station_id
   WHERE r.id = :id
 ";
 
@@ -46,15 +44,15 @@ $params = [
 ];
 
 if ($role === "admin") {
-  $sql .= " AND LOWER(TRIM(r.province)) = LOWER(TRIM(:station_province)) ";
-  $params[":station_province"] = $stationProvince;
+  $sql .= " AND r.assigned_station_id = :station_id ";
+  $params[":station_id"] = $stationId;
 }
 
 $sql .= " LIMIT 1 ";
 
 $stmt = $pdo->prepare($sql);
 foreach ($params as $k => $v) {
-  if ($k === ":id") {
+  if ($k === ":id" || $k === ":station_id") {
     $stmt->bindValue($k, (int)$v, PDO::PARAM_INT);
   } else {
     $stmt->bindValue($k, $v);
@@ -75,7 +73,7 @@ echo json_encode([
   "ok" => true,
   "scope" => [
     "role" => $role,
-    "station_province" => $role === "admin" ? $stationProvince : null,
+    "station_id" => $role === "admin" ? $stationId : null,
     "is_global" => $role === "super_admin"
   ],
   "report" => [
@@ -101,6 +99,9 @@ echo json_encode([
     "city_municipality" => $r["city_municipality"],
     "province" => $r["province"],
     "region" => $r["region"],
+    "assigned_station_id" => $r["assigned_station_id"] !== null ? (int)$r["assigned_station_id"] : null,
+    "assigned_station_name" => $r["assigned_station_name"],
+    "assigned_station_code" => $r["assigned_station_code"],
     "lat" => $r["lat"] !== null ? (float)$r["lat"] : null,
     "lng" => $r["lng"] !== null ? (float)$r["lng"] : null,
     "accuracy_m" => $r["accuracy_m"] !== null ? (int)$r["accuracy_m"] : null,
