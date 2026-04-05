@@ -165,6 +165,7 @@ function resolve_request_scope(PDO $pdo): array {
 
         if ($queryProvince !== null && $queryCity !== null) {
           $canon = canonicalize_scope_from_parts($pdo, $queryRegion, $queryProvince, $queryCity);
+
           return [
             "source" => "auth_query",
             "role" => "citizen",
@@ -452,7 +453,6 @@ try {
     }
 
     $verifiedSql .= $bboxSql . " GROUP BY lat, lng, incident_type ";
-
     $params = array_merge($params, $bboxParams);
 
     $stmt = $pdo->prepare($verifiedSql);
@@ -512,7 +512,6 @@ try {
     }
 
     $pendingSql .= $bboxSql . " GROUP BY lat, lng, incident_type ";
-
     $params = array_merge($params, $bboxParams);
 
     $stmt = $pdo->prepare($pendingSql);
@@ -553,7 +552,6 @@ try {
     append_scope_filter_for_panic($panicSql, $params, $role, $provinceFilter, $cityFilter, $userId);
 
     $panicSql .= $bboxSql . " GROUP BY lat, lng, level ";
-
     $params = array_merge($params, $bboxParams);
 
     $stmt = $pdo->prepare($panicSql);
@@ -574,11 +572,11 @@ try {
   }
 
   if ($group === 1) {
-    $grouped = [];
+    $groupedData = [];
     foreach ($heatPoints as $p) {
       $cat = $p["category"] ?? "Unknown";
-      if (!isset($grouped[$cat])) $grouped[$cat] = [];
-      $grouped[$cat][] = [
+      if (!isset($groupedData[$cat])) $groupedData[$cat] = [];
+      $groupedData[$cat][] = [
         "lat" => $p["lat"],
         "lng" => $p["lng"],
         "weight" => $p["weight"],
@@ -597,7 +595,7 @@ try {
         "province" => $provinceFilter,
         "city_municipality" => $cityFilter,
       ],
-      "data" => $grouped,
+      "data" => $groupedData,
       "pending_markers" => $pendingMarkers,
     ]);
   }

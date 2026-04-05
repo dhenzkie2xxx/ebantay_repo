@@ -12,7 +12,7 @@ function out($code, $payload) {
   exit;
 }
 
-function normalize_text($value): string {
+function normalize_text($value) {
   return trim((string)($value ?? ""));
 }
 
@@ -49,7 +49,6 @@ function reverse_geocode_scope(float $lat, float $lng): array {
 
   $context = stream_context_create($opts);
   $raw = @file_get_contents($url, false, $context);
-
   if ($raw === false) {
     return [
       "ok" => false,
@@ -210,6 +209,7 @@ try {
   $province = $canon["province"];
   $cityMunicipality = $canon["city_municipality"];
 
+  // Panic assignment is province-nearest for fastest emergency response.
   $assignedStation = assign_panic_station($pdo, $lat, $lng, $province);
   $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
   $assignmentRule = $assignedStation["_assignment_rule"] ?? "PROVINCE_NEAREST";
@@ -265,10 +265,22 @@ try {
       "station_name" => $assignedStation["station_name"] ?? null,
       "station_code" => $assignedStation["station_code"] ?? null,
       "station_type" => $assignedStation["station_type"] ?? null,
+      "region" => $assignedStation["region"] ?? null,
       "province" => $assignedStation["province"] ?? null,
       "city_municipality" => $assignedStation["city_municipality"] ?? null,
       "barangay" => $assignedStation["barangay"] ?? null,
+      "sitio" => $assignedStation["sitio"] ?? null,
+      "street_address" => $assignedStation["street_address"] ?? null,
       "full_address" => $assignedStation["full_address"] ?? null,
+      "contact_person" => $assignedStation["contact_person"] ?? null,
+      "contact_position" => $assignedStation["contact_position"] ?? null,
+      "contact_mobile" => $assignedStation["contact_mobile"] ?? null,
+      "contact_landline" => $assignedStation["contact_landline"] ?? null,
+      "contact_email" => $assignedStation["contact_email"] ?? null,
+      "emergency_contact" => $assignedStation["emergency_contact"] ?? null,
+      "operating_hours" => $assignedStation["operating_hours"] ?? null,
+      "lat" => isset($assignedStation["lat"]) ? (float)$assignedStation["lat"] : null,
+      "lng" => isset($assignedStation["lng"]) ? (float)$assignedStation["lng"] : null,
       "distance_m" => isset($assignedStation["distance_m"]) ? (int)$assignedStation["distance_m"] : null
     ] : null
   ]);

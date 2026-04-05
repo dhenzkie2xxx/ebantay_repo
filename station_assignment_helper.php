@@ -1,163 +1,124 @@
 <?php
 
-function station_assignment_normalize(?string $value): ?string {
-  $value = trim((string)($value ?? ""));
-  return $value === "" ? null : $value;
-}
-
-function station_assignment_haversine_meters(
-  float $lat1,
-  float $lng1,
-  float $lat2,
-  float $lng2
-): float {
-  $earth = 6371000.0;
-
+/**
+ * Haversine distance in meters
+ */
+function haversine_distance($lat1, $lon1, $lat2, $lon2) {
+  $R = 6371000; // meters
   $dLat = deg2rad($lat2 - $lat1);
-  $dLng = deg2rad($lng2 - $lng1);
+  $dLon = deg2rad($lon2 - $lon1);
 
-  $a = sin($dLat / 2) * sin($dLat / 2)
-     + cos(deg2rad($lat1)) * cos(deg2rad($lat2))
-     * sin($dLng / 2) * sin($dLng / 2);
+  $a = sin($dLat / 2) * sin($dLat / 2) +
+       cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+       sin($dLon / 2) * sin($dLon / 2);
 
-  return 2 * $earth * asin(min(1, sqrt($a)));
+  $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+  return $R * $c;
 }
 
-function station_assignment_pick_nearest(PDO $pdo, string $sql, array $params, float $lat, float $lng): ?array {
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute($params);
+/**
+ * Get nearest station within a specific province
+ */
+function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
+  if (!$province) return null;
+
+  $stmt = $pdo->prepare("
+    SELECT *
+    FROM police_stations
+    WHERE status = 'approved'
+      AND is_active = 1
+      AND province = ?
+  ");
+  $stmt->execute([$province]);
+
   $stations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-  if (!$stations) return null;
-
   $nearest = null;
-  $nearestDistance = null;
+  $nearestDist = null;
 
-  foreach ($stations as $station) {
-    if (!isset($station["lat"], $station["lng"])) {
-      continue;
-    }
+  foreach ($stations as $s) {
+    if (!is_numeric($s["lat"]) || !is_numeric($s["lng"])) continue;
 
-    if ($station["lat"] === null || $station["lng"] === null) {
-      continue;
-    }
+    $d = haversine_distance($lat, $lng, (float)$s["lat"], (float)$s["lng"]);
 
-    $d = station_assignment_haversine_meters(
-      $lat,
-      $lng,
-      (float)$station["lat"],
-      (float)$station["lng"]
-    );
-
-    if ($nearestDistance === null || $d < $nearestDistance) {
-      $nearestDistance = $d;
-      $nearest = $station;
+    if ($nearestDist === null || $d < $nearestDist) {
+      $nearestDist = $d;
+      $nearest = $s;
+      $nearest["distance_m"] = (int)round($d);
     }
   }
 
-  if (!$nearest) return null;
-
-  $nearest["distance_m"] = (int)round($nearestDistance);
   return $nearest;
 }
 
-function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
-  $province = station_assignment_normalize($province);
-  if ($province === null) return null;
+/**
+ * Get nearest station within a specific city/municipality
+ */
+function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string $province, ?string $city): ?array {
+  if (!$province || !$city) return null;
 
-  $sql = "
-    SELECT
-      id,
-      station_name,
-      station_code,
-      station_type,
-      region,
-      province,
-      city_municipality,
-      barangay,
-      sitio,
-      street_address,
-      full_address,
-      contact_person,
-      contact_position,
-      contact_mobile,
-      contact_landline,
-      contact_email,
-      emergency_contact,
-      operating_hours,
-      lat,
-      lng
+  $stmt = $pdo->prepare("
+    SELECT *
     FROM police_stations
-    WHERE verification_status = 'approved'
+    WHERE status = 'approved'
       AND is_active = 1
-      AND lat IS NOT NULL
-      AND lng IS NOT NULL
-      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
-  ";
+      AND province = ?
+      AND city_municipality = ?
+  ");
+  $stmt->execute([$province, $city]);
 
-  return station_assignment_pick_nearest($pdo, $sql, [$province], $lat, $lng);
-}
+  $stations = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string $province, ?string $cityMunicipality): ?array {
-  $province = station_assignment_normalize($province);
-  $cityMunicipality = station_assignment_normalize($cityMunicipality);
+  $nearest = null;
+  $nearestDist = null;
 
-  if ($province === null || $cityMunicipality === null) return null;
+  foreach ($stations as $s) {
+    if (!is_numeric($s["lat"]) || !is_numeric($s["lng"])) continue;
 
-  $sql = "
-    SELECT
-      id,
-      station_name,
-      station_code,
-      station_type,
-      region,
-      province,
-      city_municipality,
-      barangay,
-      sitio,
-      street_address,
-      full_address,
-      contact_person,
-      contact_position,
-      contact_mobile,
-      contact_landline,
-      contact_email,
-      emergency_contact,
-      operating_hours,
-      lat,
-      lng
-    FROM police_stations
-    WHERE verification_status = 'approved'
-      AND is_active = 1
-      AND lat IS NOT NULL
-      AND lng IS NOT NULL
-      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
-      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
-  ";
+    $d = haversine_distance($lat, $lng, (float)$s["lat"], (float)$s["lng"]);
 
-  return station_assignment_pick_nearest($pdo, $sql, [$province, $cityMunicipality], $lat, $lng);
-}
-
-function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $province, ?string $cityMunicipality): ?array {
-  $cityMatch = find_nearest_station_in_city($pdo, $lat, $lng, $province, $cityMunicipality);
-  if ($cityMatch) {
-    $cityMatch["_assignment_rule"] = "CITY_FIRST";
-    return $cityMatch;
+    if ($nearestDist === null || $d < $nearestDist) {
+      $nearestDist = $d;
+      $nearest = $s;
+      $nearest["distance_m"] = (int)round($d);
+    }
   }
 
+  return $nearest;
+}
+
+/**
+ * 🔴 PANIC ASSIGNMENT (EMERGENCY)
+ * → nearest station in province (FAST RESPONSE)
+ */
+function assign_panic_station(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
   $provinceMatch = find_nearest_station_in_province($pdo, $lat, $lng, $province);
+
   if ($provinceMatch) {
-    $provinceMatch["_assignment_rule"] = "PROVINCE_FALLBACK";
+    $provinceMatch["_assignment_rule"] = "PROVINCE_NEAREST";
     return $provinceMatch;
   }
 
   return null;
 }
 
-function assign_panic_station(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
+/**
+ * 🟡 INCIDENT ASSIGNMENT (STRICT JURISDICTION)
+ * → city first, fallback to province
+ */
+function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $province, ?string $city): ?array {
+
+  // 1. STRICT city match
+  $cityMatch = find_nearest_station_in_city($pdo, $lat, $lng, $province, $city);
+  if ($cityMatch) {
+    $cityMatch["_assignment_rule"] = "CITY_STRICT";
+    return $cityMatch;
+  }
+
+  // 2. fallback to province
   $provinceMatch = find_nearest_station_in_province($pdo, $lat, $lng, $province);
   if ($provinceMatch) {
-    $provinceMatch["_assignment_rule"] = "PROVINCE_NEAREST";
+    $provinceMatch["_assignment_rule"] = "PROVINCE_FALLBACK";
     return $provinceMatch;
   }
 
