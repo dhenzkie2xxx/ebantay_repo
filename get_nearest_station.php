@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/location_resolver.php";
+require_once __DIR__ . "/station_assignment_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -12,18 +14,6 @@ function out($code, $payload) {
 function normalize_scope_value($value): ?string {
   $value = trim((string)($value ?? ""));
   return $value === "" ? null : $value;
-}
-
-function haversineMeters($lat1, $lng1, $lat2, $lng2): float {
-  $earth = 6371000;
-  $dLat = deg2rad($lat2 - $lat1);
-  $dLng = deg2rad($lng2 - $lng1);
-
-  $a = sin($dLat / 2) * sin($dLat / 2)
-     + cos(deg2rad($lat1)) * cos(deg2rad($lat2))
-     * sin($dLng / 2) * sin($dLng / 2);
-
-  return 2 * $earth * asin(min(1, sqrt($a)));
 }
 
 function reverse_geocode_scope(float $lat, float $lng): array {
@@ -110,58 +100,36 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   ];
 }
 
-function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
-  if (!$province) return null;
+function canonicalize_scope_from_parts(PDO $pdo, ?string $region, ?string $province, ?string $cityMunicipality): array {
+  $province = normalize_scope_value($province);
+  $cityMunicipality = normalize_scope_value($cityMunicipality);
+  $region = normalize_scope_value($region);
 
-  $stmt = $pdo->prepare("
-    SELECT
-      id,
-      station_name,
-      station_code,
-      station_type,
-      region,
-      province,
-      city_municipality,
-      barangay,
-      sitio,
-      street_address,
-      full_address,
-      contact_person,
-      contact_position,
-      contact_mobile,
-      contact_landline,
-      contact_email,
-      emergency_contact,
-      operating_hours,
-      lat,
-      lng
-    FROM police_stations
-    WHERE verification_status = 'approved'
-      AND is_active = 1
-      AND lat IS NOT NULL
-      AND lng IS NOT NULL
-      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
-  ");
-  $stmt->execute([$province]);
-  $stations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-  if (!$stations) return null;
-
-  $nearest = null;
-  $nearestDistance = null;
-
-  foreach ($stations as $station) {
-    $d = haversineMeters($lat, $lng, (float)$station["lat"], (float)$station["lng"]);
-    if ($nearestDistance === null || $d < $nearestDistance) {
-      $nearestDistance = $d;
-      $nearest = $station;
-    }
+  if ($province === null || $cityMunicipality === null) {
+    return [
+      "ok" => false,
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+    ];
   }
 
-  if (!$nearest) return null;
+  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+  if (!$canon["ok"]) {
+    return [
+      "ok" => false,
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+    ];
+  }
 
-  $nearest["distance_m"] = (int)round($nearestDistance);
-  return $nearest;
+  return [
+    "ok" => true,
+    "region" => normalize_scope_value($canon["region"] ?? null),
+    "province" => normalize_scope_value($canon["province"] ?? null),
+    "city_municipality" => normalize_scope_value($canon["city_municipality"] ?? null),
+  ];
 }
 
 if ($_SERVER["REQUEST_METHOD"] !== "GET") {
@@ -191,8 +159,19 @@ try {
     ]);
   }
 
-  $scope = $geo["address"];
-  $province = $scope["province"] ?? null;
+  $scope = $geo["address"] ?? [];
+
+  $canon = canonicalize_scope_from_parts(
+    $pdo,
+    $scope["region"] ?? null,
+    $scope["province"] ?? null,
+    $scope["city_municipality"] ?? null
+  );
+
+  $region = $canon["region"] ?? normalize_scope_value($scope["region"] ?? null);
+  $province = $canon["province"] ?? normalize_scope_value($scope["province"] ?? null);
+  $cityMunicipality = $canon["city_municipality"] ?? normalize_scope_value($scope["city_municipality"] ?? null);
+  $barangay = normalize_scope_value($scope["barangay"] ?? null);
 
   if (!$province) {
     out(422, [
@@ -201,15 +180,28 @@ try {
     ]);
   }
 
-  $nearest = find_nearest_station_in_province($pdo, $lat, $lng, $province);
+  if (!$cityMunicipality) {
+    out(422, [
+      "ok" => false,
+      "message" => "Unable to determine city/municipality from current location"
+    ]);
+  }
+
+  $nearest = find_nearest_station_in_city($pdo, $lat, $lng, $province, $cityMunicipality);
+  $assignmentRule = "CITY_FIRST";
+
+  if (!$nearest) {
+    $nearest = find_nearest_station_in_province($pdo, $lat, $lng, $province);
+    $assignmentRule = "PROVINCE_FALLBACK";
+  }
 
   out(200, [
     "ok" => true,
     "scope" => [
-      "region" => $scope["region"] ?? null,
-      "province" => $scope["province"] ?? null,
-      "city_municipality" => $scope["city_municipality"] ?? null,
-      "barangay" => $scope["barangay"] ?? null,
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+      "barangay" => $barangay,
     ],
     "station" => $nearest ? [
       "id" => (int)$nearest["id"],
@@ -232,7 +224,8 @@ try {
       "operating_hours" => $nearest["operating_hours"],
       "lat" => (float)$nearest["lat"],
       "lng" => (float)$nearest["lng"],
-      "distance_m" => (int)$nearest["distance_m"]
+      "distance_m" => (int)$nearest["distance_m"],
+      "assignment_rule" => $assignmentRule
     ] : null
   ]);
 } catch (Throwable $e) {

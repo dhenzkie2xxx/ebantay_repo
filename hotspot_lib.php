@@ -54,12 +54,147 @@ function hotspot_base_rows(PDO $pdo): array {
   return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function hotspot_incident_rows(PDO $pdo, int $days = 30, ?string $provinceFilter = null): array {
+function hotspot_append_incident_scope_filter(
+  string &$sql,
+  array &$params,
+  string $role,
+  ?string $provinceFilter,
+  ?string $cityFilter,
+  ?int $userId
+): void {
+  if ($role === "super_admin") {
+    return;
+  }
+
+  if ($role === "admin") {
+    if ($provinceFilter !== null && $cityFilter !== null) {
+      $sql .= "
+        AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+      ";
+      $params[] = $provinceFilter;
+      $params[] = $cityFilter;
+    }
+    return;
+  }
+
+  if ($role === "citizen") {
+    if ($provinceFilter !== null && $cityFilter !== null && $userId !== null) {
+      $sql .= "
+        AND (
+          (
+            LOWER(TRIM(province)) = LOWER(TRIM(?))
+            AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+          )
+          OR reporter_user_id = ?
+        )
+      ";
+      $params[] = $provinceFilter;
+      $params[] = $cityFilter;
+      $params[] = $userId;
+    } elseif ($provinceFilter !== null && $cityFilter !== null) {
+      $sql .= "
+        AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+      ";
+      $params[] = $provinceFilter;
+      $params[] = $cityFilter;
+    } elseif ($userId !== null) {
+      $sql .= " AND reporter_user_id = ? ";
+      $params[] = $userId;
+    }
+    return;
+  }
+
+  if ($provinceFilter !== null && $cityFilter !== null) {
+    $sql .= "
+      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+    ";
+    $params[] = $provinceFilter;
+    $params[] = $cityFilter;
+  }
+}
+
+function hotspot_append_panic_scope_filter(
+  string &$sql,
+  array &$params,
+  string $role,
+  ?string $provinceFilter,
+  ?string $cityFilter,
+  ?int $userId
+): void {
+  if ($role === "super_admin") {
+    return;
+  }
+
+  if ($role === "admin") {
+    if ($provinceFilter !== null && $cityFilter !== null) {
+      $sql .= "
+        AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+      ";
+      $params[] = $provinceFilter;
+      $params[] = $cityFilter;
+    }
+    return;
+  }
+
+  if ($role === "citizen") {
+    if ($provinceFilter !== null && $cityFilter !== null && $userId !== null) {
+      $sql .= "
+        AND (
+          (
+            LOWER(TRIM(province)) = LOWER(TRIM(?))
+            AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+          )
+          OR user_id = ?
+        )
+      ";
+      $params[] = $provinceFilter;
+      $params[] = $cityFilter;
+      $params[] = $userId;
+    } elseif ($provinceFilter !== null && $cityFilter !== null) {
+      $sql .= "
+        AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+      ";
+      $params[] = $provinceFilter;
+      $params[] = $cityFilter;
+    } elseif ($userId !== null) {
+      $sql .= " AND user_id = ? ";
+      $params[] = $userId;
+    }
+    return;
+  }
+
+  if ($provinceFilter !== null && $cityFilter !== null) {
+    $sql .= "
+      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+    ";
+    $params[] = $provinceFilter;
+    $params[] = $cityFilter;
+  }
+}
+
+function hotspot_incident_rows(
+  PDO $pdo,
+  int $days = 30,
+  ?string $provinceFilter = null,
+  ?string $cityFilter = null,
+  string $role = "public",
+  ?int $userId = null
+): array {
   $sql = "
     SELECT
+      id,
+      reporter_user_id,
       lat,
       lng,
       province,
+      city_municipality,
+      barangay,
       date_reported
     FROM incident_reports
     WHERE
@@ -71,22 +206,30 @@ function hotspot_incident_rows(PDO $pdo, int $days = 30, ?string $provinceFilter
   ";
   $params = [$days];
 
-  if ($provinceFilter !== null) {
-    $sql .= " AND LOWER(TRIM(province)) = LOWER(TRIM(?)) ";
-    $params[] = $provinceFilter;
-  }
+  hotspot_append_incident_scope_filter($sql, $params, $role, $provinceFilter, $cityFilter, $userId);
 
   $stmt = $pdo->prepare($sql);
   $stmt->execute($params);
   return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function hotspot_panic_rows(PDO $pdo, int $days = 30, ?string $provinceFilter = null): array {
+function hotspot_panic_rows(
+  PDO $pdo,
+  int $days = 30,
+  ?string $provinceFilter = null,
+  ?string $cityFilter = null,
+  string $role = "public",
+  ?int $userId = null
+): array {
   $sql = "
     SELECT
+      id,
+      user_id,
       lat,
       lng,
       province,
+      city_municipality,
+      barangay,
       level,
       created_at,
       status
@@ -99,23 +242,28 @@ function hotspot_panic_rows(PDO $pdo, int $days = 30, ?string $provinceFilter = 
   ";
   $params = [$days];
 
-  if ($provinceFilter !== null) {
-    $sql .= " AND LOWER(TRIM(province)) = LOWER(TRIM(?)) ";
-    $params[] = $provinceFilter;
-  }
+  hotspot_append_panic_scope_filter($sql, $params, $role, $provinceFilter, $cityFilter, $userId);
 
   $stmt = $pdo->prepare($sql);
   $stmt->execute($params);
   return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
-function get_computed_hotspots(PDO $pdo, int $days = 30, ?string $provinceFilter = null): array {
+function get_computed_hotspots(
+  PDO $pdo,
+  int $days = 30,
+  ?string $provinceFilter = null,
+  ?string $cityFilter = null,
+  string $role = "public",
+  ?int $userId = null
+): array {
   $days = max(1, min(365, $days));
   $provinceFilter = hotspot_normalize_scope_value($provinceFilter);
+  $cityFilter = hotspot_normalize_scope_value($cityFilter);
 
   $hotspots = hotspot_base_rows($pdo);
-  $incidentRows = hotspot_incident_rows($pdo, $days, $provinceFilter);
-  $panicRows = hotspot_panic_rows($pdo, $days, $provinceFilter);
+  $incidentRows = hotspot_incident_rows($pdo, $days, $provinceFilter, $cityFilter, $role, $userId);
+  $panicRows = hotspot_panic_rows($pdo, $days, $provinceFilter, $cityFilter, $role, $userId);
 
   $out = [];
 
@@ -150,7 +298,7 @@ function get_computed_hotspots(PDO $pdo, int $days = 30, ?string $provinceFilter
       }
     }
 
-    if ($provinceFilter !== null && $incidentCount === 0 && $panicCount === 0) {
+    if (($provinceFilter !== null && $cityFilter !== null) && $incidentCount === 0 && $panicCount === 0) {
       continue;
     }
 
@@ -161,6 +309,10 @@ function get_computed_hotspots(PDO $pdo, int $days = 30, ?string $provinceFilter
     $out[] = [
       "id" => (int)$h["id"],
       "name" => $h["name"],
+      "region" => $h["region"],
+      "province" => $h["province"],
+      "city_municipality" => $h["city_municipality"],
+      "barangay" => $h["barangay"],
       "lat" => $hLat,
       "lng" => $hLng,
       "radius_m" => $radius,
@@ -258,7 +410,7 @@ function hotspot_detect_context(PDO $pdo, float $lat, float $lng, ?int $excludeI
   }
 
   $panicStmt = $pdo->prepare("
-    SELECT id, level, lat, lng, created_at, province
+    SELECT id, level, lat, lng, created_at, province, city_municipality
     FROM panic_requests
     WHERE
       status <> 'resolved'
