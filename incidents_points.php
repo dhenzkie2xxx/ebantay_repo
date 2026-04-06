@@ -406,6 +406,34 @@ $maxLng = isset($_GET["maxLng"]) ? (float)$_GET["maxLng"] : null;
 
 $scope = resolve_request_scope($pdo);
 
+if (($scope["role"] ?? "public") !== "super_admin") {
+  $hasScopedArea =
+    !empty($scope["province"]) &&
+    !empty($scope["city_municipality"]);
+
+  $isCitizenWithUser =
+    ($scope["role"] ?? "") === "citizen" &&
+    !empty($scope["user_id"]);
+
+  if (!$hasScopedArea && !$isCitizenWithUser) {
+    out(200, [
+      "ok" => true,
+      "days" => $days,
+      "grouped" => ($group === 1),
+      "scope" => [
+        "source" => $scope["source"] ?? "none",
+        "role" => $scope["role"] ?? "public",
+        "user_id" => $scope["user_id"] ?? null,
+        "region" => $scope["region"] ?? null,
+        "province" => $scope["province"] ?? null,
+        "city_municipality" => $scope["city_municipality"] ?? null,
+      ],
+      "data" => $group === 1 ? (object)[] : [],
+      "pending_markers" => [],
+    ]);
+  }
+}
+
 $role = (string)($scope["role"] ?? "public");
 $userId = isset($scope["user_id"]) ? (int)$scope["user_id"] : null;
 $provinceFilter = normalize_scope_value($scope["province"] ?? null);
