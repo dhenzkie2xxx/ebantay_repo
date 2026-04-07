@@ -13,19 +13,63 @@ function normalize_scope_value($value): ?string {
   return $value === "" ? null : $value;
 }
 
-function reverse_geocode_scope(float $lat, float $lng): array {
-  $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
-    . urlencode((string)$lat)
-    . "&lon="
-    . urlencode((string)$lng);
+function looks_like_region_name(?string $value): bool {
+  $value = strtolower(trim((string)$value));
+  if ($value === "") return false;
 
+  return
+    str_contains($value, "region") ||
+    str_contains($value, "national capital region") ||
+    $value === "ncr" ||
+    str_contains($value, "metro manila");
+}
+
+function http_get_json(string $url): array {
+  $headers = [
+    "User-Agent: eBantay/1.0",
+    "Accept: application/json",
+  ];
+
+  // Try cURL first
+  if (function_exists("curl_init")) {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_FOLLOWLOCATION => true,
+      CURLOPT_HTTPHEADER => $headers,
+      CURLOPT_TIMEOUT => 20,
+      CURLOPT_CONNECTTIMEOUT => 10,
+      CURLOPT_SSL_VERIFYPEER => true,
+      CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+
+    $raw = curl_exec($ch);
+    $err = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    if ($raw !== false && $status >= 200 && $status < 300) {
+      $json = json_decode($raw, true);
+      if (is_array($json)) {
+        return ["ok" => true, "json" => $json];
+      }
+      return ["ok" => false, "message" => "Invalid geocoding JSON response"];
+    }
+
+    $msg = $err ?: ("HTTP " . $status);
+    return ["ok" => false, "message" => "Geocoding request failed: " . $msg];
+  }
+
+  // Fallback to file_get_contents if cURL is unavailable
   $opts = [
     "http" => [
       "method" => "GET",
-      "header" =>
-        "User-Agent: eBantay/1.0\r\n" .
-        "Accept: application/json\r\n",
-      "timeout" => 15
+      "header" => "User-Agent: eBantay/1.0\r\nAccept: application/json\r\n",
+      "timeout" => 20
+    ],
+    "ssl" => [
+      "verify_peer" => true,
+      "verify_peer_name" => true,
     ]
   ];
 
@@ -33,20 +77,82 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   $raw = @file_get_contents($url, false, $context);
 
   if ($raw === false) {
+    $error = error_get_last();
     return [
       "ok" => false,
-      "message" => "Reverse geocoding service unavailable"
+      "message" => "Geocoding request failed" . (!empty($error["message"]) ? ": " . $error["message"] : "")
     ];
   }
 
   $json = json_decode($raw, true);
   if (!is_array($json)) {
+    return ["ok" => false, "message" => "Invalid geocoding JSON response"];
+  }
+
+  return ["ok" => true, "json" => $json];
+}
+
+function resolve_scope_from_city(PDO $pdo, ?string $cityMunicipality): array {
+  $cityMunicipality = normalize_scope_value($cityMunicipality);
+  if (!$cityMunicipality) {
     return [
-      "ok" => false,
-      "message" => "Invalid geocoding response"
+      "province" => null,
+      "region" => null,
+      "city_municipality" => null,
     ];
   }
 
+  $sql = "
+    SELECT
+      c.canonical_name AS city_municipality,
+      p.canonical_name AS province,
+      r.canonical_name AS region
+    FROM location_cities c
+    INNER JOIN location_provinces p ON p.id = c.province_id
+    INNER JOIN location_regions r ON r.id = p.region_id
+    WHERE LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
+
+    UNION
+
+    SELECT
+      c.canonical_name AS city_municipality,
+      p.canonical_name AS province,
+      r.canonical_name AS region
+    FROM location_city_aliases a
+    INNER JOIN location_cities c ON c.id = a.city_id
+    INNER JOIN location_provinces p ON p.id = c.province_id
+    INNER JOIN location_regions r ON r.id = p.region_id
+    WHERE LOWER(TRIM(a.alias_name)) = LOWER(TRIM(?))
+
+    LIMIT 1
+  ";
+
+  $stmt = $pdo->prepare($sql);
+  $stmt->execute([$cityMunicipality, $cityMunicipality]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  return [
+    "province" => normalize_scope_value($row["province"] ?? null),
+    "region" => normalize_scope_value($row["region"] ?? null),
+    "city_municipality" => normalize_scope_value($row["city_municipality"] ?? $cityMunicipality),
+  ];
+}
+
+function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
+  $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
+    . urlencode((string)$lat)
+    . "&lon="
+    . urlencode((string)$lng);
+
+  $http = http_get_json($url);
+  if (!$http["ok"]) {
+    return [
+      "ok" => false,
+      "message" => $http["message"]
+    ];
+  }
+
+  $json = $http["json"];
   $addr = $json["address"] ?? [];
 
   $barangay = $addr["suburb"]
@@ -72,21 +178,34 @@ function reverse_geocode_scope(float $lat, float $lng): array {
     ?? "";
 
   if ($province === "" && $state !== "") {
-    $stateLower = strtolower($state);
-    $looksLikeRegion =
-      str_contains($stateLower, "region") ||
-      str_contains($stateLower, "national capital region") ||
-      $stateLower === "ncr" ||
-      str_contains($stateLower, "metro manila");
-
-    if ($looksLikeRegion) {
+    if (looks_like_region_name($state)) {
       if ($region === "") $region = $state;
     } else {
       $province = $state;
     }
   }
 
-  $road = $addr["road"] ?? "";
+  if ($province === "" && $cityMunicipality !== "") {
+    $resolved = resolve_scope_from_city($pdo, $cityMunicipality);
+
+    if (!empty($resolved["city_municipality"])) {
+      $cityMunicipality = $resolved["city_municipality"];
+    }
+    if ($province === "" && !empty($resolved["province"])) {
+      $province = $resolved["province"];
+    }
+    if ($region === "" && !empty($resolved["region"])) {
+      $region = $resolved["region"];
+    }
+  }
+
+  $placeOfIncident = $addr["road"]
+    ?? $addr["amenity"]
+    ?? $addr["building"]
+    ?? $addr["tourism"]
+    ?? $addr["shop"]
+    ?? "";
+
   $displayName = $json["display_name"] ?? "";
 
   return [
@@ -96,7 +215,7 @@ function reverse_geocode_scope(float $lat, float $lng): array {
       "city_municipality" => normalize_scope_value($cityMunicipality),
       "province" => normalize_scope_value($province),
       "region" => normalize_scope_value($region),
-      "place_of_incident" => normalize_scope_value($road),
+      "place_of_incident" => normalize_scope_value($placeOfIncident),
       "display_name" => normalize_scope_value($displayName)
     ]
   ];
@@ -121,7 +240,7 @@ if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
 }
 
 try {
-  $result = reverse_geocode_scope($lat, $lng);
+  $result = reverse_geocode_scope($pdo, $lat, $lng);
 
   if (!$result["ok"]) {
     out(502, [
