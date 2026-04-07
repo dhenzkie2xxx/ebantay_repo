@@ -389,6 +389,26 @@ function append_scope_filter_for_panic(
   }
 }
 
+function append_incident_category_filter(string &$sql, array &$params, string $category): void {
+  $category = trim($category);
+  if ($category === "") return;
+
+  $upper = strtoupper($category);
+
+  if ($upper === "PANIC") {
+    return;
+  }
+
+  if (in_array($upper, ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"], true)) {
+    $sql .= " AND UPPER(crime_category) = ? ";
+    $params[] = $upper;
+    return;
+  }
+
+  $sql .= " AND incident_type = ? ";
+  $params[] = $category;
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
@@ -474,11 +494,7 @@ try {
     $params = [$days];
 
     append_scope_filter_for_incidents($verifiedSql, $params, $role, $provinceFilter, $cityFilter, $userId);
-
-    if ($category !== "") {
-      $verifiedSql .= " AND incident_type = ? ";
-      $params[] = $category;
-    }
+    append_incident_category_filter($verifiedSql, $params, $category);
 
     $verifiedSql .= $bboxSql . " GROUP BY lat, lng, incident_type ";
     $params = array_merge($params, $bboxParams);
@@ -533,11 +549,7 @@ try {
     $params = [$days];
 
     append_scope_filter_for_incidents($pendingSql, $params, $role, $provinceFilter, $cityFilter, $userId);
-
-    if ($category !== "") {
-      $pendingSql .= " AND incident_type = ? ";
-      $params[] = $category;
-    }
+    append_incident_category_filter($pendingSql, $params, $category);
 
     $pendingSql .= $bboxSql . " GROUP BY lat, lng, incident_type ";
     $params = array_merge($params, $bboxParams);
