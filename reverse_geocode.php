@@ -13,64 +13,7 @@ function normalize_scope_value($value): ?string {
   return $value === "" ? null : $value;
 }
 
-function looks_like_region_name(?string $value): bool {
-  $value = strtolower(trim((string)$value));
-  if ($value === "") return false;
-
-  return
-    str_contains($value, "region") ||
-    str_contains($value, "national capital region") ||
-    $value === "ncr" ||
-    str_contains($value, "metro manila");
-}
-
-function resolve_scope_from_city(PDO $pdo, ?string $cityMunicipality): array {
-  $cityMunicipality = normalize_scope_value($cityMunicipality);
-  if (!$cityMunicipality) {
-    return [
-      "province" => null,
-      "region" => null,
-      "city_municipality" => null,
-    ];
-  }
-
-  $sql = "
-    SELECT
-      c.canonical_name AS city_municipality,
-      p.canonical_name AS province,
-      r.canonical_name AS region
-    FROM location_cities c
-    INNER JOIN location_provinces p ON p.id = c.province_id
-    INNER JOIN location_regions r ON r.id = p.region_id
-    WHERE LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
-
-    UNION
-
-    SELECT
-      c.canonical_name AS city_municipality,
-      p.canonical_name AS province,
-      r.canonical_name AS region
-    FROM location_city_aliases a
-    INNER JOIN location_cities c ON c.id = a.city_id
-    INNER JOIN location_provinces p ON p.id = c.province_id
-    INNER JOIN location_regions r ON r.id = p.region_id
-    WHERE LOWER(TRIM(a.alias_name)) = LOWER(TRIM(?))
-
-    LIMIT 1
-  ";
-
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute([$cityMunicipality, $cityMunicipality]);
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-  return [
-    "province" => normalize_scope_value($row["province"] ?? null),
-    "region" => normalize_scope_value($row["region"] ?? null),
-    "city_municipality" => normalize_scope_value($row["city_municipality"] ?? $cityMunicipality),
-  ];
-}
-
-function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
+function reverse_geocode_scope(float $lat, float $lng): array {
   $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
     . urlencode((string)$lat)
     . "&lon="
@@ -129,35 +72,21 @@ function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
     ?? "";
 
   if ($province === "" && $state !== "") {
-    if (looks_like_region_name($state)) {
+    $stateLower = strtolower($state);
+    $looksLikeRegion =
+      str_contains($stateLower, "region") ||
+      str_contains($stateLower, "national capital region") ||
+      $stateLower === "ncr" ||
+      str_contains($stateLower, "metro manila");
+
+    if ($looksLikeRegion) {
       if ($region === "") $region = $state;
     } else {
       $province = $state;
     }
   }
 
-  // Fallback from your own location tables when province is still missing.
-  if ($province === "" && $cityMunicipality !== "") {
-    $resolved = resolve_scope_from_city($pdo, $cityMunicipality);
-
-    if (!empty($resolved["city_municipality"])) {
-      $cityMunicipality = $resolved["city_municipality"];
-    }
-    if ($province === "" && !empty($resolved["province"])) {
-      $province = $resolved["province"];
-    }
-    if ($region === "" && !empty($resolved["region"])) {
-      $region = $resolved["region"];
-    }
-  }
-
-  $placeOfIncident = $addr["road"]
-    ?? $addr["amenity"]
-    ?? $addr["building"]
-    ?? $addr["tourism"]
-    ?? $addr["shop"]
-    ?? "";
-
+  $road = $addr["road"] ?? "";
   $displayName = $json["display_name"] ?? "";
 
   return [
@@ -167,7 +96,7 @@ function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
       "city_municipality" => normalize_scope_value($cityMunicipality),
       "province" => normalize_scope_value($province),
       "region" => normalize_scope_value($region),
-      "place_of_incident" => normalize_scope_value($placeOfIncident),
+      "place_of_incident" => normalize_scope_value($road),
       "display_name" => normalize_scope_value($displayName)
     ]
   ];
@@ -192,7 +121,7 @@ if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
 }
 
 try {
-  $result = reverse_geocode_scope($pdo, $lat, $lng);
+  $result = reverse_geocode_scope($lat, $lng);
 
   if (!$result["ok"]) {
     out(502, [
