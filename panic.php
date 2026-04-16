@@ -209,8 +209,9 @@ try {
   $province = $canon["province"];
   $cityMunicipality = $canon["city_municipality"];
 
-  // Panic assignment is province-nearest for fastest emergency response.
+  // Panic assignment is nearest station admin plus nearest police on field when available.
   $assignedStation = assign_panic_station($pdo, $lat, $lng, $province);
+  $nearestPoliceOnField = function_exists('find_nearest_police_on_field') ? find_nearest_police_on_field($pdo, $lat, $lng, $province) : null;
   $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
   $assignmentRule = $assignedStation["_assignment_rule"] ?? "PROVINCE_NEAREST";
 

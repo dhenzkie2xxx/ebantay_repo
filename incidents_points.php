@@ -425,6 +425,21 @@ $minLng = isset($_GET["minLng"]) ? (float)$_GET["minLng"] : null;
 $maxLng = isset($_GET["maxLng"]) ? (float)$_GET["maxLng"] : null;
 
 $scope = resolve_request_scope($pdo);
+$role = strtolower((string)($scope["role"] ?? "public"));
+if ($role === "citizen") {
+  out(200, [
+    "ok" => true,
+    "data" => [],
+    "pending_markers" => [],
+    "scope" => [
+      "source" => $scope["source"] ?? null,
+      "role" => $role,
+      "region" => $scope["region"] ?? null,
+      "province" => $scope["province"] ?? null,
+      "city_municipality" => $scope["city_municipality"] ?? null
+    ]
+  ]);
+}
 
 if (($scope["role"] ?? "public") !== "super_admin") {
   $hasScopedArea =

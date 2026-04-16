@@ -78,7 +78,8 @@ function auth_check_token_expired(array $user): bool {
 }
 
 function auth_admin_station_gate(array $user): ?array {
-  if (($user["role"] ?? "") !== "admin") {
+  $role = (string)($user["role"] ?? "");
+  if (!in_array($role, ["admin", "police_on_field"], true)) {
     return null;
   }
 
@@ -99,7 +100,7 @@ function auth_admin_station_gate(array $user): ?array {
       "payload" => [
         "ok" => false,
         "code" => "ACCOUNT_DISABLED",
-        "message" => "Your admin account is disabled."
+        "message" => $role === "police_on_field" ? "Your police on field account is disabled." : "Your admin account is disabled."
       ]
     ];
   }

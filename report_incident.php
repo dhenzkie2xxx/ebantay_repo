@@ -54,6 +54,67 @@ function haversineMeters($lat1, $lng1, $lat2, $lng2) {
   return 2 * $earth * asin(min(1, sqrt($a)));
 }
 
+
+function normalize_narrative_for_match(string $text): string {
+  $text = strtolower(trim($text));
+  $text = preg_replace('/\s+/', ' ', $text);
+  $text = preg_replace('/[^a-z0-9\s]/', '', $text);
+  return trim($text);
+}
+
+function compute_severity_score(string $crimeCategory, int $victimCount, int $suspectCount, int $propertyLossFlag, string $riskStatus, int $isHotspotRelated): float {
+  $crimeWeights = [
+    'INDEX' => 3.0,
+    'SPECIAL_LAW' => 2.5,
+    'NON_INDEX' => 2.0,
+    'OTHER' => 1.5,
+  ];
+
+  $C = $crimeWeights[strtoupper($crimeCategory)] ?? 1.5;
+  $V = max(0, $victimCount) * 0.5;
+  $S = max(0, $suspectCount) * 0.5;
+  $P = $propertyLossFlag ? 1.0 : 0.0;
+  $R = (strtoupper($riskStatus) === 'RISK' || (int)$isHotspotRelated === 1) ? 1.0 : 0.0;
+
+  return round($C + $V + $S + $P + $R, 2);
+}
+
+function find_recent_same_user_incident(PDO $pdo, int $userId, string $incidentType, float $lat, float $lng, string $dateIncidentFromSql, int $windowMinutes = 20): ?array {
+  $stmt = $pdo->prepare("\n    SELECT id, incident_code, incident_type, lat, lng, date_incident_from, created_at\n    FROM incident_reports\n    WHERE reporter_user_id = ?\n      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))\n      AND created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)\n      AND verification_status <> 'FALSE_REPORT'\n    ORDER BY created_at DESC\n    LIMIT 10\n  ");
+  $stmt->execute([$userId, $incidentType, $windowMinutes]);
+  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  foreach ($rows as $r) {
+    $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
+    $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime((string)($r['date_incident_from'] ?: $r['created_at'])));
+    if ($d <= 150 && $timeDiff <= ($windowMinutes * 60)) {
+      $r['distance_m'] = (int) round($d);
+      return $r;
+    }
+  }
+  return null;
+}
+
+function find_duplicate_incident(PDO $pdo, int $userId, string $incidentType, string $narrative, float $lat, float $lng, string $dateIncidentFromSql): ?array {
+  $stmt = $pdo->prepare("\n    SELECT id, incident_code, reporter_user_id, incident_type, narrative, lat, lng, date_incident_from, created_at\n    FROM incident_reports\n    WHERE reporter_user_id <> ?\n      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))\n      AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)\n      AND verification_status IN ('PENDING','VERIFIED','DUPLICATE')\n    ORDER BY created_at DESC\n    LIMIT 50\n  ");
+  $stmt->execute([$userId, $incidentType]);
+  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+  $needle = normalize_narrative_for_match($narrative);
+  foreach ($rows as $r) {
+    $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
+    if ($d > 200) continue;
+    $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime((string)($r['date_incident_from'] ?: $r['created_at'])));
+    if ($timeDiff > (60 * 60 * 2)) continue;
+    $existing = normalize_narrative_for_match((string)$r['narrative']);
+    similar_text($needle, $existing, $percent);
+    if ($needle !== '' && $existing !== '' && $percent >= 78) {
+      $r['distance_m'] = (int) round($d);
+      $r['text_similarity'] = round($percent, 2);
+      return $r;
+    }
+  }
+  return null;
+}
+
 function reverse_geocode_scope(float $lat, float $lng): array {
   $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
     . urlencode((string)$lat)
@@ -323,6 +384,32 @@ try {
 
   /*
   |--------------------------------------------------------------------------
+  | PREVENT SAME-ACCOUNT MULTIPLE INCIDENTS WITHIN 20 MINUTES
+  |--------------------------------------------------------------------------
+  */
+  $existingRecent = find_recent_same_user_incident($pdo, (int)$user["id"], $incidentType, $lat, $lng, $dateIncidentFromSql, 20);
+  if ($existingRecent) {
+    out(429, [
+      "ok" => false,
+      "message" => "You already submitted a similar incident report within the last 20 minutes.",
+      "code" => "RECENT_DUPLICATE_BY_SAME_USER",
+      "existing_report" => [
+        "id" => (int)$existingRecent["id"],
+        "incident_code" => $existingRecent["incident_code"],
+        "distance_m" => (int)($existingRecent["distance_m"] ?? 0)
+      ]
+    ]);
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | DUPLICATE CHECK AGAINST OTHER CITIZENS
+  |--------------------------------------------------------------------------
+  */
+  $duplicateOf = find_duplicate_incident($pdo, (int)$user["id"], $incidentType, $narrative, $lat, $lng, $dateIncidentFromSql);
+
+  /*
+  |--------------------------------------------------------------------------
   | HOTSPOT CHECK
   |--------------------------------------------------------------------------
   */
@@ -385,6 +472,8 @@ try {
     $reportDelayMinutes = max(0, (int)round($delay));
   }
 
+  $severityScore = compute_severity_score($crimeCategory, 0, 0, 0, $riskStatus, $isHotspotRelated);
+
   $incidentCode = generate_incident_code($pdo);
 
   $pdo->beginTransaction();
@@ -426,11 +515,12 @@ try {
       case_status,
       device_time,
       report_delay_minutes,
+      severity_score,
       created_at,
       updated_at
     ) VALUES (
       ?, ?, 'mobile_app', 'mobile', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GPS',
-      ?, ?, ?, ?, ?, 'REPORTED', 'PENDING', 'OPEN', ?, ?, NOW(), NOW()
+      ?, ?, ?, ?, ?, 'REPORTED', ?, 'OPEN', ?, ?, ?, NOW(), NOW()
     )
   ");
 
@@ -462,8 +552,10 @@ try {
     $riskStatus,
     $riskDistanceM,
     $riskRadiusM,
+    $duplicateOf ? 'DUPLICATE' : 'PENDING',
     $deviceTimeSql,
-    $reportDelayMinutes
+    $reportDelayMinutes,
+    $severityScore
   ]);
 
   $incidentId = (int)$pdo->lastInsertId();
@@ -509,7 +601,7 @@ try {
 
   $statusStmt->execute([
     $incidentId,
-    'Incident reported from mobile app',
+    $duplicateOf ? 'Incident reported from mobile app and auto-flagged as DUPLICATE candidate' : 'Incident reported from mobile app',
     (int)$user["id"]
   ]);
 
@@ -646,6 +738,16 @@ try {
       "radius_m" => $riskRadiusM,
       "hotspot_id" => $hotspotId,
       "is_hotspot_related" => $isHotspotRelated
+    ],
+    "severity_score" => $severityScore,
+    "duplicate_flag" => $duplicateOf ? [
+      "is_duplicate" => true,
+      "matched_incident_id" => (int)$duplicateOf["id"],
+      "matched_incident_code" => $duplicateOf["incident_code"],
+      "distance_m" => (int)($duplicateOf["distance_m"] ?? 0),
+      "text_similarity" => (float)($duplicateOf["text_similarity"] ?? 0)
+    ] : [
+      "is_duplicate" => false
     ]
   ]);
 

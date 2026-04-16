@@ -106,3 +106,65 @@ function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $prov
 
   return null;
 }
+
+function find_nearest_police_on_field(PDO $pdo, float $lat, float $lng, ?string $province = null): ?array {
+  $sql = "
+    SELECT
+      u.id,
+      u.firstname,
+      u.lastname,
+      u.email,
+      u.station_id,
+      ul.lat,
+      ul.lng,
+      ul.accuracy_m,
+      ul.created_at,
+      ps.station_name,
+      ps.station_code,
+      ps.region,
+      ps.province,
+      ps.city_municipality,
+      ps.barangay,
+      ps.full_address
+    FROM users u
+    INNER JOIN police_stations ps ON ps.id = u.station_id
+    INNER JOIN (
+      SELECT ul1.*
+      FROM user_locations ul1
+      INNER JOIN (
+        SELECT user_id, MAX(created_at) AS max_created_at
+        FROM user_locations
+        GROUP BY user_id
+      ) latest ON latest.user_id = ul1.user_id AND latest.max_created_at = ul1.created_at
+    ) ul ON ul.user_id = u.id
+    WHERE u.role = 'police_on_field'
+      AND u.valid = 'valid'
+      AND u.account_status = 'active'
+      AND u.is_email_verified = 1
+      AND ps.verification_status = 'approved'
+      AND ps.is_active = 1
+  ";
+
+  $params = [];
+  if ($province) {
+    $sql .= " AND LOWER(TRIM(ps.province)) = LOWER(TRIM(?)) ";
+    $params[] = $province;
+  }
+
+  $stmt = $pdo->prepare($sql);
+  $stmt->execute($params);
+  $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+  $nearest = null;
+  $nearestDist = null;
+  foreach ($rows as $r) {
+    if (!isset($r['lat'], $r['lng']) || !is_numeric($r['lat']) || !is_numeric($r['lng'])) continue;
+    $d = haversine_distance($lat, $lng, (float)$r['lat'], (float)$r['lng']);
+    if ($nearestDist === null || $d < $nearestDist) {
+      $nearestDist = $d;
+      $nearest = $r;
+      $nearest['distance_m'] = (int) round($d);
+    }
+  }
+  return $nearest;
+}
