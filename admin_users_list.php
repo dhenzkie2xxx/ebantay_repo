@@ -68,7 +68,6 @@ try {
     out(403, ["ok" => false, "message" => "Access denied"]);
   }
 
-  // super admin = all citizen users
   if ($role === "super_admin") {
     $stmt = $pdo->query("
       SELECT
@@ -104,6 +103,27 @@ try {
 
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
+    $reqStmt = $pdo->prepare("
+      SELECT
+        r.id,
+        r.requirement_code AS code,
+        r.requirement_name AS name,
+        r.is_required,
+        r.is_system,
+        r.station_id,
+        r.city_municipality,
+        r.province,
+        r.active,
+        r.created_by,
+        r.created_at,
+        r.updated_at
+      FROM user_verification_requirements r
+      WHERE r.active = 1
+      ORDER BY r.is_system DESC, r.requirement_name ASC
+    ");
+    $reqStmt->execute();
+    $requirements = $reqStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
     out(200, [
       "ok" => true,
       "scope" => [
@@ -111,6 +131,22 @@ try {
         "province" => null,
         "city_municipality" => null
       ],
+      "requirements" => array_map(function ($r) {
+        return [
+          "id" => (int)$r["id"],
+          "code" => $r["code"],
+          "name" => $r["name"],
+          "is_required" => (int)$r["is_required"] === 1,
+          "is_system" => (int)$r["is_system"] === 1,
+          "station_id" => $r["station_id"] !== null ? (int)$r["station_id"] : null,
+          "city_municipality" => $r["city_municipality"],
+          "province" => $r["province"],
+          "active" => (int)$r["active"] === 1,
+          "created_by" => $r["created_by"] !== null ? (int)$r["created_by"] : null,
+          "created_at" => $r["created_at"],
+          "updated_at" => $r["updated_at"]
+        ];
+      }, $requirements),
       "users" => array_map(function ($r) {
         return [
           "id" => (int)$r["id"],
@@ -130,7 +166,6 @@ try {
     ]);
   }
 
-  // station admin scope via users.station_id
   $stationStmt = $pdo->prepare("
     SELECT
       ps.id,
@@ -235,6 +270,40 @@ try {
   $stmt->execute($params);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
+  $reqStmt = $pdo->prepare("
+    SELECT
+      r.id,
+      r.requirement_code AS code,
+      r.requirement_name AS name,
+      r.is_required,
+      r.is_system,
+      r.station_id,
+      r.city_municipality,
+      r.province,
+      r.active,
+      r.created_by,
+      r.created_at,
+      r.updated_at
+    FROM user_verification_requirements r
+    WHERE r.active = 1
+      AND (
+        (r.station_id IS NULL AND r.city_municipality IS NULL AND r.province IS NULL)
+        OR (
+          r.station_id IS NULL
+          AND LOWER(COALESCE(r.province, '')) = LOWER(?)
+          AND LOWER(COALESCE(r.city_municipality, '')) = LOWER(?)
+        )
+        OR r.station_id = ?
+      )
+    ORDER BY r.is_system DESC, r.requirement_name ASC
+  ");
+  $reqStmt->execute([
+    $scopeProvince,
+    $scopeCity,
+    (int)$station["id"],
+  ]);
+  $requirements = $reqStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
   out(200, [
     "ok" => true,
     "scope" => [
@@ -244,6 +313,22 @@ try {
       "province" => $scopeProvince,
       "city_municipality" => $scopeCity
     ],
+    "requirements" => array_map(function ($r) {
+      return [
+        "id" => (int)$r["id"],
+        "code" => $r["code"],
+        "name" => $r["name"],
+        "is_required" => (int)$r["is_required"] === 1,
+        "is_system" => (int)$r["is_system"] === 1,
+        "station_id" => $r["station_id"] !== null ? (int)$r["station_id"] : null,
+        "city_municipality" => $r["city_municipality"],
+        "province" => $r["province"],
+        "active" => (int)$r["active"] === 1,
+        "created_by" => $r["created_by"] !== null ? (int)$r["created_by"] : null,
+        "created_at" => $r["created_at"],
+        "updated_at" => $r["updated_at"]
+      ];
+    }, $requirements),
     "users" => array_map(function ($r) {
       return [
         "id" => (int)$r["id"],

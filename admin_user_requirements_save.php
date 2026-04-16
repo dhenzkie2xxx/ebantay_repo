@@ -188,17 +188,17 @@ try {
   $data = get_request_json();
 
   $targetUserId = (int)($data["user_id"] ?? 0);
-  if ($targetUserId <= 0) {
-    out(400, ["ok" => false, "message" => "Missing or invalid user_id"]);
-  }
+  $targetUser = null;
 
-  $targetUser = get_target_user($pdo, $targetUserId);
-  if (!$targetUser) {
-    out(404, ["ok" => false, "message" => "Citizen user not found"]);
-  }
+  if ($targetUserId > 0) {
+    $targetUser = get_target_user($pdo, $targetUserId);
+    if (!$targetUser) {
+      out(404, ["ok" => false, "message" => "Citizen user not found"]);
+    }
 
-  if (!can_admin_access_user($scope, $targetUser)) {
-    out(403, ["ok" => false, "message" => "You do not have access to this user"]);
+    if (!can_admin_access_user($scope, $targetUser)) {
+      out(403, ["ok" => false, "message" => "You do not have access to this user"]);
+    }
   }
 
   $requirements = $data["requirements"] ?? null;
@@ -527,7 +527,9 @@ try {
 
   out(200, [
     "ok" => true,
-    "message" => "User verification requirements saved successfully",
+    "message" => $targetUser
+      ? "User verification requirements saved successfully"
+      : "Station user verification requirements saved successfully",
     "scope" => [
       "role" => $scope["role"],
       "station_id" => $scope["station_id"],
@@ -535,12 +537,12 @@ try {
       "province" => $scope["province"],
       "city_municipality" => $scope["city_municipality"],
     ],
-    "user" => [
+    "user" => $targetUser ? [
       "id" => (int)$targetUser["id"],
       "firstname" => $targetUser["firstname"],
       "lastname" => $targetUser["lastname"],
       "email" => $targetUser["email"],
-    ],
+    ] : null,
     "requirements" => $resultRows,
   ]);
 
