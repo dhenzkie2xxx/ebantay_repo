@@ -4,6 +4,25 @@ require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+$allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ebantay.top.gen.in",
+];
+
+$origin = $_SERVER["HTTP_ORIGIN"] ?? "";
+if ($origin && in_array($origin, $allowedOrigins, true)) {
+  header("Access-Control-Allow-Origin: $origin");
+  header("Access-Control-Allow-Credentials: true");
+}
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+  http_response_code(204);
+  exit;
+}
+
 function out($code, $payload) {
   http_response_code($code);
   echo json_encode($payload);
@@ -49,7 +68,7 @@ try {
     out(403, ["ok" => false, "message" => "Access denied"]);
   }
 
-  // Super admin can see all citizen users.
+  // super admin = all citizen users
   if ($role === "super_admin") {
     $stmt = $pdo->query("
       SELECT
@@ -69,15 +88,18 @@ try {
       LEFT JOIN user_profiles up ON up.user_id = u.id
       WHERE LOWER(u.role) = 'citizen'
       ORDER BY
-        CASE u.account_status
-          WHEN 'PENDING' THEN 1
-          WHEN 'RESUBMISSION_REQUIRED' THEN 2
-          WHEN 'INCOMPLETE' THEN 3
-          WHEN 'REJECTED' THEN 4
-          WHEN 'VERIFIED' THEN 5
-          ELSE 6
+        CASE LOWER(COALESCE(u.account_status, 'pending'))
+          WHEN 'pending' THEN 1
+          WHEN 'resubmission_required' THEN 2
+          WHEN 'incomplete' THEN 3
+          WHEN 'rejected' THEN 4
+          WHEN 'verified' THEN 5
+          WHEN 'active' THEN 6
+          ELSE 7
         END,
-        COALESCE(up.updated_at, u.id) DESC
+        COALESCE(up.updated_at, u.updated_at) DESC,
+        u.lastname ASC,
+        u.firstname ASC
     ");
 
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -96,7 +118,7 @@ try {
           "lastname" => $r["lastname"],
           "email" => $r["email"],
           "username" => $r["username"],
-          "account_status" => $r["account_status"] ?: "INCOMPLETE",
+          "account_status" => strtolower((string)($r["account_status"] ?: "pending")),
           "is_email_verified" => (int)($r["is_email_verified"] ?? 0),
           "mobile_number" => $r["mobile_number"],
           "city_municipality" => $r["city_municipality"],
@@ -108,15 +130,16 @@ try {
     ]);
   }
 
-  // Station admin scope from police_stations
+  // station admin scope via users.station_id
   $stationStmt = $pdo->prepare("
     SELECT
       ps.id,
       ps.station_name,
       ps.city_municipality,
       ps.province
-    FROM police_stations ps
-    WHERE ps.user_id = ?
+    FROM users u
+    INNER JOIN police_stations ps ON ps.id = u.station_id
+    WHERE u.id = ?
     LIMIT 1
   ");
   $stationStmt->execute([(int)$user["id"]]);
@@ -140,12 +163,9 @@ try {
   }
 
   $search = trim((string)($_GET["search"] ?? ""));
-  $status = strtoupper(trim((string)($_GET["status"] ?? "")));
+  $status = strtolower(trim((string)($_GET["status"] ?? "")));
 
-  $params = [
-    $scopeProvince,
-    $scopeCity
-  ];
+  $params = [$scopeProvince, $scopeCity];
 
   $sql = "
     SELECT
@@ -169,13 +189,15 @@ try {
   ";
 
   if ($status !== "" && in_array($status, [
-    "INCOMPLETE",
-    "PENDING",
-    "VERIFIED",
-    "REJECTED",
-    "RESUBMISSION_REQUIRED"
+    "pending",
+    "active",
+    "disabled",
+    "incomplete",
+    "verified",
+    "rejected",
+    "resubmission_required"
   ], true)) {
-    $sql .= " AND u.account_status = ? ";
+    $sql .= " AND LOWER(COALESCE(u.account_status, 'pending')) = ? ";
     $params[] = $status;
   }
 
@@ -195,15 +217,16 @@ try {
 
   $sql .= "
     ORDER BY
-      CASE u.account_status
-        WHEN 'PENDING' THEN 1
-        WHEN 'RESUBMISSION_REQUIRED' THEN 2
-        WHEN 'INCOMPLETE' THEN 3
-        WHEN 'REJECTED' THEN 4
-        WHEN 'VERIFIED' THEN 5
-        ELSE 6
+      CASE LOWER(COALESCE(u.account_status, 'pending'))
+        WHEN 'pending' THEN 1
+        WHEN 'resubmission_required' THEN 2
+        WHEN 'incomplete' THEN 3
+        WHEN 'rejected' THEN 4
+        WHEN 'verified' THEN 5
+        WHEN 'active' THEN 6
+        ELSE 7
       END,
-      COALESCE(up.updated_at, '1970-01-01 00:00:00') DESC,
+      COALESCE(up.updated_at, u.updated_at) DESC,
       u.lastname ASC,
       u.firstname ASC
   ";
@@ -228,7 +251,7 @@ try {
         "lastname" => $r["lastname"],
         "email" => $r["email"],
         "username" => $r["username"],
-        "account_status" => $r["account_status"] ?: "INCOMPLETE",
+        "account_status" => strtolower((string)($r["account_status"] ?: "pending")),
         "is_email_verified" => (int)($r["is_email_verified"] ?? 0),
         "mobile_number" => $r["mobile_number"],
         "city_municipality" => $r["city_municipality"],
