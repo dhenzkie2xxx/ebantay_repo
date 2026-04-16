@@ -425,21 +425,6 @@ $minLng = isset($_GET["minLng"]) ? (float)$_GET["minLng"] : null;
 $maxLng = isset($_GET["maxLng"]) ? (float)$_GET["maxLng"] : null;
 
 $scope = resolve_request_scope($pdo);
-$role = strtolower((string)($scope["role"] ?? "public"));
-if ($role === "citizen") {
-  out(200, [
-    "ok" => true,
-    "data" => [],
-    "pending_markers" => [],
-    "scope" => [
-      "source" => $scope["source"] ?? null,
-      "role" => $role,
-      "region" => $scope["region"] ?? null,
-      "province" => $scope["province"] ?? null,
-      "city_municipality" => $scope["city_municipality"] ?? null
-    ]
-  ]);
-}
 
 if (($scope["role"] ?? "public") !== "super_admin") {
   $hasScopedArea =
@@ -485,6 +470,7 @@ if ($minLat !== null && $maxLat !== null && $minLng !== null && $maxLng !== null
 try {
   $heatPoints = [];
   $pendingMarkers = [];
+  $myMarkers = [];
 
   if ($category === "" || strcasecmp($category, "Panic") !== 0) {
     $verifiedSql = "
@@ -626,6 +612,91 @@ try {
     }
   }
 
+  if ($role === "citizen" && $userId !== null) {
+    if ($category === "" || strcasecmp($category, "Panic") !== 0) {
+      $myReportsSql = "
+        SELECT
+          id,
+          lat,
+          lng,
+          incident_type AS category,
+          verification_status,
+          incident_phase,
+          date_reported AS latest_at
+        FROM incident_reports
+        WHERE
+          reporter_user_id = ?
+          AND lat IS NOT NULL
+          AND lng IS NOT NULL
+          AND incident_phase <> 'REJECTED'
+          AND verification_status <> 'FALSE_REPORT'
+          AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+      ";
+
+      $params = [$userId, $days];
+      append_incident_category_filter($myReportsSql, $params, $category);
+      $myReportsSql .= $bboxSql . " ORDER BY latest_at DESC ";
+      $params = array_merge($params, $bboxParams);
+
+      $stmt = $pdo->prepare($myReportsSql);
+      $stmt->execute($params);
+      $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+      foreach ($rows as $r) {
+        $myMarkers[] = [
+          "id" => (int)$r["id"],
+          "lat" => (float)$r["lat"],
+          "lng" => (float)$r["lng"],
+          "category" => $r["category"] ?: "Other",
+          "marker_type" => "my_report",
+          "verification_status" => $r["verification_status"] ?: "PENDING",
+          "incident_phase" => $r["incident_phase"] ?: "REPORTED",
+          "source" => "incident_report",
+        ];
+      }
+    }
+
+    if ($category === "" || strcasecmp($category, "Panic") === 0) {
+      $myPanicSql = "
+        SELECT
+          id,
+          lat,
+          lng,
+          level,
+          status,
+          created_at AS latest_at
+        FROM panic_requests
+        WHERE
+          user_id = ?
+          AND lat IS NOT NULL
+          AND lng IS NOT NULL
+          AND created_at >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+          AND status <> 'resolved'
+      ";
+
+      $params = [$userId, $days];
+      $myPanicSql .= $bboxSql . " ORDER BY latest_at DESC ";
+      $params = array_merge($params, $bboxParams);
+
+      $stmt = $pdo->prepare($myPanicSql);
+      $stmt->execute($params);
+      $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+      foreach ($rows as $r) {
+        $myMarkers[] = [
+          "id" => (int)$r["id"],
+          "lat" => (float)$r["lat"],
+          "lng" => (float)$r["lng"],
+          "category" => "Panic",
+          "marker_type" => "my_panic",
+          "level" => $r["level"] ?: "alert",
+          "status" => $r["status"] ?: "new",
+          "source" => "panic_request",
+        ];
+      }
+    }
+  }
+
   if ($group === 1) {
     $groupedData = [];
     foreach ($heatPoints as $p) {
@@ -652,6 +723,7 @@ try {
       ],
       "data" => $groupedData,
       "pending_markers" => $pendingMarkers,
+      "my_markers" => $myMarkers,
     ]);
   }
 
@@ -669,6 +741,7 @@ try {
     ],
     "data" => $heatPoints,
     "pending_markers" => $pendingMarkers,
+    "my_markers" => $myMarkers,
   ]);
 } catch (Throwable $e) {
   out(500, [
