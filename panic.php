@@ -119,6 +119,46 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   ];
 }
 
+function can_user_use_protected_features(array $user): bool {
+  $status = strtolower(trim((string)($user["account_status"] ?? "")));
+  $valid = strtolower(trim((string)($user["valid"] ?? "")));
+
+  // Backward-compatible:
+  // - old approved users may still be active + valid
+  // - new approved users are verified + valid
+  if (in_array($status, ["active", "verified"], true) && $valid === "valid") {
+    return true;
+  }
+
+  return false;
+}
+
+function feature_block_message(array $user): string {
+  $status = strtolower(trim((string)($user["account_status"] ?? "")));
+
+  if ($status === "pending") {
+    return "Your account is pending verification. Please wait for the station administrator to review your account.";
+  }
+
+  if ($status === "incomplete") {
+    return "Please complete your account profile and upload all required documents before using this feature.";
+  }
+
+  if ($status === "resubmission_required") {
+    return "Your account requires resubmission. Please review the remarks in your Account screen and upload the required documents again.";
+  }
+
+  if ($status === "rejected") {
+    return "Your account verification was rejected. Please check the remarks in your Account screen or contact the station administrator.";
+  }
+
+  if ($status === "disabled") {
+    return "Your account is currently disabled. Please contact the administrator.";
+  }
+
+  return "Your account is not yet activated. Please complete account setup or contact the administrator.";
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
@@ -166,10 +206,12 @@ try {
     out(403, ["ok" => false, "message" => "Email not verified"]);
   }
 
-  if (($user["valid"] ?? "") !== "valid") {
+  if (!can_user_use_protected_features($user)) {
     out(403, [
       "ok" => false,
-      "message" => "Your account is not yet activated. Please complete account setup or contact the administrator."
+      "message" => feature_block_message($user),
+      "account_status" => strtolower((string)($user["account_status"] ?? "")),
+      "valid" => strtolower((string)($user["valid"] ?? ""))
     ]);
   }
 
@@ -211,7 +253,10 @@ try {
 
   // Panic assignment is nearest station admin plus nearest police on field when available.
   $assignedStation = assign_panic_station($pdo, $lat, $lng, $province);
-  $nearestPoliceOnField = function_exists('find_nearest_police_on_field') ? find_nearest_police_on_field($pdo, $lat, $lng, $province) : null;
+  $nearestPoliceOnField = function_exists("find_nearest_police_on_field")
+    ? find_nearest_police_on_field($pdo, $lat, $lng, $province)
+    : null;
+
   $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
   $assignmentRule = $assignedStation["_assignment_rule"] ?? "PROVINCE_NEAREST";
 
@@ -283,6 +328,17 @@ try {
       "lat" => isset($assignedStation["lat"]) ? (float)$assignedStation["lat"] : null,
       "lng" => isset($assignedStation["lng"]) ? (float)$assignedStation["lng"] : null,
       "distance_m" => isset($assignedStation["distance_m"]) ? (int)$assignedStation["distance_m"] : null
+    ] : null,
+    "nearest_police_on_field" => $nearestPoliceOnField ? [
+      "id" => isset($nearestPoliceOnField["id"]) ? (int)$nearestPoliceOnField["id"] : null,
+      "user_id" => isset($nearestPoliceOnField["user_id"]) ? (int)$nearestPoliceOnField["user_id"] : null,
+      "firstname" => $nearestPoliceOnField["firstname"] ?? null,
+      "lastname" => $nearestPoliceOnField["lastname"] ?? null,
+      "email" => $nearestPoliceOnField["email"] ?? null,
+      "mobile_number" => $nearestPoliceOnField["mobile_number"] ?? null,
+      "lat" => isset($nearestPoliceOnField["lat"]) ? (float)$nearestPoliceOnField["lat"] : null,
+      "lng" => isset($nearestPoliceOnField["lng"]) ? (float)$nearestPoliceOnField["lng"] : null,
+      "distance_m" => isset($nearestPoliceOnField["distance_m"]) ? (int)$nearestPoliceOnField["distance_m"] : null
     ] : null
   ]);
 

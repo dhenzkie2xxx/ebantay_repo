@@ -54,7 +54,6 @@ function haversineMeters($lat1, $lng1, $lat2, $lng2) {
   return 2 * $earth * asin(min(1, sqrt($a)));
 }
 
-
 function normalize_narrative_for_match(string $text): string {
   $text = strtolower(trim($text));
   $text = preg_replace('/\s+/', ' ', $text);
@@ -80,9 +79,19 @@ function compute_severity_score(string $crimeCategory, int $victimCount, int $su
 }
 
 function find_recent_same_user_incident(PDO $pdo, int $userId, string $incidentType, float $lat, float $lng, string $dateIncidentFromSql, int $windowMinutes = 20): ?array {
-  $stmt = $pdo->prepare("\n    SELECT id, incident_code, incident_type, lat, lng, date_incident_from, created_at\n    FROM incident_reports\n    WHERE reporter_user_id = ?\n      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))\n      AND created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)\n      AND verification_status <> 'FALSE_REPORT'\n    ORDER BY created_at DESC\n    LIMIT 10\n  ");
+  $stmt = $pdo->prepare("
+    SELECT id, incident_code, incident_type, lat, lng, date_incident_from, created_at
+    FROM incident_reports
+    WHERE reporter_user_id = ?
+      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
+      AND created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+      AND verification_status <> 'FALSE_REPORT'
+    ORDER BY created_at DESC
+    LIMIT 10
+  ");
   $stmt->execute([$userId, $incidentType, $windowMinutes]);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
   foreach ($rows as $r) {
     $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
     $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime((string)($r['date_incident_from'] ?: $r['created_at'])));
@@ -95,17 +104,30 @@ function find_recent_same_user_incident(PDO $pdo, int $userId, string $incidentT
 }
 
 function find_duplicate_incident(PDO $pdo, int $userId, string $incidentType, string $narrative, float $lat, float $lng, string $dateIncidentFromSql): ?array {
-  $stmt = $pdo->prepare("\n    SELECT id, incident_code, reporter_user_id, incident_type, narrative, lat, lng, date_incident_from, created_at\n    FROM incident_reports\n    WHERE reporter_user_id <> ?\n      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))\n      AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)\n      AND verification_status IN ('PENDING','VERIFIED','DUPLICATE')\n    ORDER BY created_at DESC\n    LIMIT 50\n  ");
+  $stmt = $pdo->prepare("
+    SELECT id, incident_code, reporter_user_id, incident_type, narrative, lat, lng, date_incident_from, created_at
+    FROM incident_reports
+    WHERE reporter_user_id <> ?
+      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
+      AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
+      AND verification_status IN ('PENDING','VERIFIED','DUPLICATE')
+    ORDER BY created_at DESC
+    LIMIT 50
+  ");
   $stmt->execute([$userId, $incidentType]);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
   $needle = normalize_narrative_for_match($narrative);
   foreach ($rows as $r) {
     $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
     if ($d > 200) continue;
+
     $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime((string)($r['date_incident_from'] ?: $r['created_at'])));
     if ($timeDiff > (60 * 60 * 2)) continue;
+
     $existing = normalize_narrative_for_match((string)$r['narrative']);
     similar_text($needle, $existing, $percent);
+
     if ($needle !== '' && $existing !== '' && $percent >= 78) {
       $r['distance_m'] = (int) round($d);
       $r['text_similarity'] = round($percent, 2);
@@ -203,6 +225,43 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   ];
 }
 
+function can_user_use_protected_features(array $user): bool {
+  $status = strtolower(trim((string)($user["account_status"] ?? "")));
+  $valid = strtolower(trim((string)($user["valid"] ?? "")));
+
+  if (in_array($status, ["active", "verified"], true) && $valid === "valid") {
+    return true;
+  }
+
+  return false;
+}
+
+function feature_block_message(array $user): string {
+  $status = strtolower(trim((string)($user["account_status"] ?? "")));
+
+  if ($status === "pending") {
+    return "Your account is pending verification. Please wait for the station administrator to review your account.";
+  }
+
+  if ($status === "incomplete") {
+    return "Please complete your account profile and upload all required documents before using this feature.";
+  }
+
+  if ($status === "resubmission_required") {
+    return "Your account requires resubmission. Please review the remarks in your Account screen and upload the required documents again.";
+  }
+
+  if ($status === "rejected") {
+    return "Your account verification was rejected. Please check the remarks in your Account screen or contact the station administrator.";
+  }
+
+  if ($status === "disabled") {
+    return "Your account is currently disabled. Please contact the administrator.";
+  }
+
+  return "Your account is not yet activated. Please complete account setup or contact the administrator.";
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
@@ -282,15 +341,21 @@ try {
     out(401, ["ok" => false, "message" => "Unauthorized"]);
   }
 
-  if (($user["valid"] ?? "") !== "valid") {
-    out(403, [
-      "ok" => false,
-      "message" => "Your account is not yet activated. Please complete account setup or contact the administrator."
-    ]);
-  }
-
   if (auth_check_token_expired($user)) {
     out(401, ["ok" => false, "message" => "Token expired"]);
+  }
+
+  if ((int)($user["is_email_verified"] ?? 0) !== 1) {
+    out(403, ["ok" => false, "message" => "Email not verified"]);
+  }
+
+  if (!can_user_use_protected_features($user)) {
+    out(403, [
+      "ok" => false,
+      "message" => feature_block_message($user),
+      "account_status" => strtolower((string)($user["account_status"] ?? "")),
+      "valid" => strtolower((string)($user["valid"] ?? ""))
+    ]);
   }
 
   /*
