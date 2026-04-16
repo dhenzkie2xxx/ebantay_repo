@@ -4,6 +4,25 @@ require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+$allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ebantay.top.gen.in",
+];
+
+$origin = $_SERVER["HTTP_ORIGIN"] ?? "";
+if ($origin && in_array($origin, $allowedOrigins, true)) {
+  header("Access-Control-Allow-Origin: $origin");
+  header("Access-Control-Allow-Credentials: true");
+}
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+  http_response_code(204);
+  exit;
+}
+
 function out($code, $payload) {
   http_response_code($code);
   echo json_encode($payload);
@@ -62,8 +81,9 @@ function get_admin_scope(PDO $pdo, array $adminUser): array {
       ps.station_name,
       ps.province,
       ps.city_municipality
-    FROM police_stations ps
-    WHERE ps.user_id = ?
+    FROM users u
+    INNER JOIN police_stations ps ON ps.id = u.station_id
+    WHERE u.id = ?
     LIMIT 1
   ");
   $stmt->execute([(int)$adminUser["id"]]);
@@ -190,7 +210,6 @@ try {
 
   $pdo->beginTransaction();
 
-  // Load existing dynamic requirements under this admin scope
   if (($scope["role"] ?? "") === "super_admin") {
     $existingStmt = $pdo->prepare("
       SELECT
@@ -260,7 +279,6 @@ try {
       continue;
     }
 
-    // Preserve baseline/system requirements only by ensuring they exist and stay active
     if ($incomingSystem || in_array($incomingCode, $systemCodes, true)) {
       if ($incomingCode === "") {
         $incomingCode = normalize_requirement_code($incomingName);
@@ -334,7 +352,6 @@ try {
       continue;
     }
 
-    // Dynamic requirement
     if ($incomingCode === "") {
       $incomingCode = normalize_requirement_code($incomingName);
     }
@@ -380,7 +397,6 @@ try {
       continue;
     }
 
-    // Try to match existing dynamic requirement by scoped code before insert
     if (($scope["role"] ?? "") === "super_admin") {
       $findStmt = $pdo->prepare("
         SELECT id
@@ -487,7 +503,6 @@ try {
     }
   }
 
-  // Deactivate removed dynamic requirements in current scope
   foreach ($existingRows as $existing) {
     $existingId = (int)$existing["id"];
     $isSystem = (int)($existing["is_system"] ?? 0) === 1;

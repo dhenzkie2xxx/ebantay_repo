@@ -4,6 +4,25 @@ require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+$allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ebantay.top.gen.in",
+];
+
+$origin = $_SERVER["HTTP_ORIGIN"] ?? "";
+if ($origin && in_array($origin, $allowedOrigins, true)) {
+  header("Access-Control-Allow-Origin: $origin");
+  header("Access-Control-Allow-Credentials: true");
+}
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+  http_response_code(204);
+  exit;
+}
+
 function out($code, $payload) {
   http_response_code($code);
   echo json_encode($payload);
@@ -62,8 +81,9 @@ function get_admin_scope(PDO $pdo, array $adminUser): array {
       ps.station_name,
       ps.province,
       ps.city_municipality
-    FROM police_stations ps
-    WHERE ps.user_id = ?
+    FROM users u
+    INNER JOIN police_stations ps ON ps.id = u.station_id
+    WHERE u.id = ?
     LIMIT 1
   ");
   $stmt->execute([(int)$adminUser["id"]]);
@@ -183,7 +203,6 @@ try {
 
   $pdo->beginTransaction();
 
-  // Update user main status
   $updateUserStmt = $pdo->prepare("
     UPDATE users
     SET
@@ -207,7 +226,6 @@ try {
     throw new RuntimeException("Failed to update user rejection status");
   }
 
-  // Update latest verification request if exists, otherwise create one
   $latestReqStmt = $pdo->prepare("
     SELECT id
     FROM user_verification_requests
@@ -255,8 +273,6 @@ try {
     ]);
   }
 
-  // Mark submitted docs as rejected when admin chooses full rejection.
-  // For resubmission_required, also reject submitted docs so the UI reflects action clearly.
   $rejectDocsStmt = $pdo->prepare("
     UPDATE user_requirement_submissions
     SET

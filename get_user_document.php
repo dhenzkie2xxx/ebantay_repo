@@ -2,6 +2,25 @@
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
 
+$allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ebantay.top.gen.in",
+];
+
+$origin = $_SERVER["HTTP_ORIGIN"] ?? "";
+if ($origin && in_array($origin, $allowedOrigins, true)) {
+  header("Access-Control-Allow-Origin: $origin");
+  header("Access-Control-Allow-Credentials: true");
+}
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+  http_response_code(204);
+  exit;
+}
+
 function out_json($code, $payload) {
   http_response_code($code);
   header("Content-Type: application/json; charset=UTF-8");
@@ -34,8 +53,9 @@ function can_admin_access_user(PDO $pdo, array $adminUser, int $targetUserId): b
       ps.id,
       ps.city_municipality,
       ps.province
-    FROM police_stations ps
-    WHERE ps.user_id = ?
+    FROM users u
+    INNER JOIN police_stations ps ON ps.id = u.station_id
+    WHERE u.id = ?
     LIMIT 1
   ");
   $stationStmt->execute([(int)$adminUser["id"]]);
@@ -131,12 +151,10 @@ try {
 
   $allowed = false;
 
-  // Citizen owner can access own uploaded document
   if ($viewerRole === "citizen" && $viewerId === $ownerUserId) {
     $allowed = true;
   }
 
-  // Admin / Super Admin can access if in scope
   if (!$allowed && in_array($viewerRole, ["admin", "super_admin"], true)) {
     $allowed = can_admin_access_user($pdo, $authUser, $ownerUserId);
   }
@@ -175,7 +193,6 @@ try {
     exit;
   }
 
-  // preview mode
   header("Content-Type: " . $mimeType);
   header("Content-Length: " . strlen($blob));
   header('Content-Disposition: inline; filename="' . addslashes($fileName) . '"');

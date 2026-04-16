@@ -4,6 +4,25 @@ require_once __DIR__ . "/auth_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+$allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ebantay.top.gen.in",
+];
+
+$origin = $_SERVER["HTTP_ORIGIN"] ?? "";
+if ($origin && in_array($origin, $allowedOrigins, true)) {
+  header("Access-Control-Allow-Origin: $origin");
+  header("Access-Control-Allow-Credentials: true");
+}
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+  http_response_code(204);
+  exit;
+}
+
 function out($code, $payload) {
   http_response_code($code);
   echo json_encode($payload);
@@ -38,8 +57,9 @@ function can_admin_access_user(PDO $pdo, array $adminUser, int $targetUserId): a
       ps.station_name,
       ps.city_municipality,
       ps.province
-    FROM police_stations ps
-    WHERE ps.user_id = ?
+    FROM users u
+    INNER JOIN police_stations ps ON ps.id = u.station_id
+    WHERE u.id = ?
     LIMIT 1
   ");
   $stationStmt->execute([(int)$adminUser["id"]]);
@@ -130,9 +150,6 @@ try {
     out(403, ["ok" => false, "message" => $access["message"] ?? "Access denied"]);
   }
 
-  // -------------------------------------------------------
-  // User + profile
-  // -------------------------------------------------------
   $stmt = $pdo->prepare("
     SELECT
       u.id,
@@ -174,10 +191,6 @@ try {
     out(404, ["ok" => false, "message" => "Citizen user not found"]);
   }
 
-  // -------------------------------------------------------
-  // Requirements
-  // Baseline/global + station/city/province-scoped dynamic reqs
-  // -------------------------------------------------------
   $requirementsSql = "
     SELECT
       r.id,
@@ -217,10 +230,6 @@ try {
   $reqStmt->execute($params);
   $requirements = $reqStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-  // -------------------------------------------------------
-  // Submissions
-  // Return file URLs for preview/download endpoint
-  // -------------------------------------------------------
   $subStmt = $pdo->prepare("
     SELECT
       s.id,
@@ -245,18 +254,9 @@ try {
   $subStmt->execute([$targetUserId]);
   $submissionsRaw = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-  $baseUrl = "";
-  if (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] !== "off") {
-    $scheme = "https";
-  } else {
-    $scheme = "http";
-  }
-
+  $scheme = (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] !== "off") ? "https" : "http";
   $host = $_SERVER["HTTP_HOST"] ?? "";
-  if ($host !== "") {
-    $baseUrl = $scheme . "://" . $host;
-  }
-
+  $baseUrl = $host !== "" ? $scheme . "://" . $host : "";
   $tokenParam = rawurlencode($token);
 
   $submissions = array_map(function ($s) use ($baseUrl, $tokenParam) {
@@ -282,9 +282,6 @@ try {
     ];
   }, $submissionsRaw);
 
-  // -------------------------------------------------------
-  // Latest verification request
-  // -------------------------------------------------------
   $vrStmt = $pdo->prepare("
     SELECT
       v.id,
