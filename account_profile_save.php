@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -101,6 +102,18 @@ try {
     out(422, ["ok" => false, "message" => "City/Municipality and Province are required"]);
   }
 
+  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+  if (!($canon["ok"] ?? false)) {
+    out(422, [
+      "ok" => false,
+      "message" => $canon["message"] ?? "Invalid address scope"
+    ]);
+  }
+
+  $region = $canon["region"] ?? $region;
+  $province = $canon["province"] ?? $province;
+  $cityMunicipality = $canon["city_municipality"] ?? $cityMunicipality;
+
   $pdo->beginTransaction();
 
   $checkStmt = $pdo->prepare("
@@ -170,7 +183,6 @@ try {
     ]);
   }
 
-  // If previously rejected or asked for resubmission, move back to incomplete after edit
   $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
   if (in_array($currentStatus, ["rejected", "resubmission_required"], true)) {
     $statusStmt = $pdo->prepare("
