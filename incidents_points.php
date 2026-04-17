@@ -450,6 +450,7 @@ if (($scope["role"] ?? "public") !== "super_admin") {
       ],
       "data" => $group === 1 ? (object)[] : [],
       "pending_markers" => [],
+      "my_markers" => [],
     ]);
   }
 }
@@ -709,6 +710,25 @@ try {
       ];
     }
 
+    if ($role === "citizen") {
+      out(200, [
+        "ok" => true,
+        "days" => $days,
+        "grouped" => true,
+        "scope" => [
+          "source" => $scope["source"],
+          "role" => $role,
+          "user_id" => $userId,
+          "region" => $regionFilter,
+          "province" => $provinceFilter,
+          "city_municipality" => $cityFilter,
+        ],
+        "data" => (object)[],
+        "pending_markers" => [],
+        "my_markers" => $myMarkers,
+      ]);
+    }
+
     out(200, [
       "ok" => true,
       "days" => $days,
@@ -723,6 +743,25 @@ try {
       ],
       "data" => $groupedData,
       "pending_markers" => $pendingMarkers,
+      "my_markers" => $myMarkers,
+    ]);
+  }
+
+  if ($role === "citizen") {
+    out(200, [
+      "ok" => true,
+      "days" => $days,
+      "grouped" => false,
+      "scope" => [
+        "source" => $scope["source"],
+        "role" => $role,
+        "user_id" => $userId,
+        "region" => $regionFilter,
+        "province" => $provinceFilter,
+        "city_municipality" => $cityFilter,
+      ],
+      "data" => [],
+      "pending_markers" => [],
       "my_markers" => $myMarkers,
     ]);
   }
