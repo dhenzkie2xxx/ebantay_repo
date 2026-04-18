@@ -318,6 +318,36 @@ try {
     'HIGH'
 ]);
 
+$notifTitle = $action === "rejected"
+  ? "Account Rejected"
+  : "Resubmission Required";
+
+$notifMessage = $action === "rejected"
+  ? "Your account verification was rejected. Reason: " . $remarks
+  : "Your account requires resubmission. Reason: " . $remarks;
+
+$notifyStmt = $pdo->prepare("
+  INSERT INTO notification_alerts
+  (
+    user_id,
+    type,
+    title,
+    message,
+    severity,
+    is_read,
+    created_at
+  )
+  VALUES (?, ?, ?, ?, ?, 0, NOW())
+");
+
+$notifyStmt->execute([
+  $targetUserId,
+  'ACCOUNT_STATUS',
+  $notifTitle,
+  $notifMessage,
+  'HIGH'
+]);
+
   $pdo->commit();
 
   out(200, [
