@@ -30,17 +30,22 @@ $token = bearer_token();
 if ($token === "") out(401, ["ok" => false, "message" => "Missing token"]);
 
 $stmt = $pdo->prepare("
-  SELECT id
+  SELECT id, role, account_status, valid
   FROM users
   WHERE api_token = ?
-    AND valid = 'valid'
     AND (api_token_expires IS NULL OR api_token_expires > NOW())
   LIMIT 1
 ");
 $stmt->execute([$token]);
 $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$user) out(401, ["ok" => false, "message" => "Invalid token"]);
+if (!$user) {
+  out(401, ["ok" => false, "message" => "Invalid token"]);
+}
+
+if (strtolower((string)($user["role"] ?? "")) !== "citizen") {
+  out(403, ["ok" => false, "message" => "Access denied"]);
+}
 
 $userId = (int)$user["id"];
 
@@ -78,5 +83,10 @@ echo json_encode([
       "is_read" => (int)$r["is_read"],
       "created_at" => $r["created_at"]
     ];
-  }, $rows)
+  }, $rows),
+  "user" => [
+    "id" => $userId,
+    "account_status" => $user["account_status"] ?? null,
+    "valid" => $user["valid"] ?? null,
+  ]
 ]);
