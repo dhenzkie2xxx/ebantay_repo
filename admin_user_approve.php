@@ -296,28 +296,6 @@ try {
     'LOW'
   ]);
 
-  $notifyStmt = $pdo->prepare("
-  INSERT INTO notification_alerts
-  (
-    user_id,
-    type,
-    title,
-    message,
-    severity,
-    is_read,
-    created_at
-  )
-  VALUES (?, ?, ?, ?, ?, 0, NOW())
-");
-
-$notifyStmt->execute([
-  $targetUserId,
-  'ACCOUNT_STATUS',
-  'Account Verified',
-  'Your account has been verified by the station admin. You can now use report and panic features.',
-  'LOW'
-]);
-
   $pdo->commit();
 
   out(200, [
