@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
-require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -43,6 +42,10 @@ function get_request_json(): array {
   return is_array($json) ? $json : [];
 }
 
+function is_valid_ph_mobile(string $value): bool {
+  return preg_match('/^09\d{9}$/', $value) === 1;
+}
+
 try {
   if ($_SERVER["REQUEST_METHOD"] !== "POST") {
     out(405, ["ok" => false, "message" => "Method not allowed"]);
@@ -66,6 +69,14 @@ try {
     out(403, ["ok" => false, "message" => "Only citizen users can save account profile"]);
   }
 
+  $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
+  if (in_array($currentStatus, ["verified", "active", "disabled"], true)) {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account information is already locked."
+    ]);
+  }
+
   $data = get_request_json();
   $userId = (int)$user["id"];
 
@@ -79,8 +90,11 @@ try {
   $addressLat = $data["address_lat"] ?? null;
   $addressLng = $data["address_lng"] ?? null;
 
-  if ($mobileNumber === "" || strlen($mobileNumber) < 10) {
-    out(422, ["ok" => false, "message" => "A valid mobile number is required"]);
+  if (!is_valid_ph_mobile($mobileNumber)) {
+    out(422, [
+      "ok" => false,
+      "message" => "Mobile number must be a valid Philippine mobile number in this format: 09XXXXXXXXX"
+    ]);
   }
 
   if ($addressText === "") {
@@ -102,30 +116,49 @@ try {
     out(422, ["ok" => false, "message" => "City/Municipality and Province are required"]);
   }
 
-  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
-  if (!($canon["ok"] ?? false)) {
-    out(422, [
-      "ok" => false,
-      "message" => $canon["message"] ?? "Invalid address scope"
-    ]);
-  }
-
-  $region = $canon["region"] ?? $region;
-  $province = $canon["province"] ?? $province;
-  $cityMunicipality = $canon["city_municipality"] ?? $cityMunicipality;
-
-  $pdo->beginTransaction();
-
-  $checkStmt = $pdo->prepare("
-    SELECT id
+  $profileStmt = $pdo->prepare("
+    SELECT
+      id,
+      mobile_number
     FROM user_profiles
     WHERE user_id = ?
     LIMIT 1
   ");
-  $checkStmt->execute([$userId]);
-  $existingProfileId = $checkStmt->fetchColumn();
+  $profileStmt->execute([$userId]);
+  $existingProfile = $profileStmt->fetch(PDO::FETCH_ASSOC);
 
-  if ($existingProfileId) {
+  // once mobile is set, it is locked forever
+  if ($existingProfile && trim((string)($existingProfile["mobile_number"] ?? "")) !== "") {
+    $existingMobile = trim((string)$existingProfile["mobile_number"]);
+    if ($existingMobile !== $mobileNumber) {
+      out(403, [
+        "ok" => false,
+        "message" => "Your mobile number is already locked and can no longer be changed."
+      ]);
+    }
+  }
+
+  // global uniqueness across all users
+  $duplicateStmt = $pdo->prepare("
+    SELECT up.user_id
+    FROM user_profiles up
+    WHERE up.mobile_number = ?
+      AND up.user_id <> ?
+    LIMIT 1
+  ");
+  $duplicateStmt->execute([$mobileNumber, $userId]);
+  $duplicateUserId = $duplicateStmt->fetchColumn();
+
+  if ($duplicateUserId) {
+    out(422, [
+      "ok" => false,
+      "message" => "This mobile number is already used by another user."
+    ]);
+  }
+
+  $pdo->beginTransaction();
+
+  if ($existingProfile) {
     $updateStmt = $pdo->prepare("
       UPDATE user_profiles
       SET
@@ -183,7 +216,7 @@ try {
     ]);
   }
 
-  $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
+  // If previously rejected or asked for resubmission, move back to incomplete after edit
   if (in_array($currentStatus, ["rejected", "resubmission_required"], true)) {
     $statusStmt = $pdo->prepare("
       UPDATE users
@@ -218,6 +251,7 @@ try {
       "city_municipality" => $cityMunicipality,
       "province" => $province,
       "region" => $region,
+      "mobile_locked" => true,
     ]
   ]);
 

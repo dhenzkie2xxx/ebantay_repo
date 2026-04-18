@@ -151,6 +151,99 @@ function can_admin_access_user(array $scope, array $targetUser): bool {
     strcasecmp((string)$scope["city_municipality"], (string)$targetCity) === 0;
 }
 
+function queue_user_notification(
+  PDO $pdo,
+  int $userId,
+  string $type,
+  string $title,
+  string $message,
+  string $severity = "MEDIUM"
+): void {
+  $severity = strtoupper(trim($severity));
+  if (!in_array($severity, ["LOW", "MEDIUM", "HIGH"], true)) {
+    $severity = "MEDIUM";
+  }
+
+  $stmt = $pdo->prepare("
+    INSERT INTO notification_alerts
+    (
+      user_id,
+      type,
+      title,
+      message,
+      severity,
+      is_read,
+      created_at
+    )
+    VALUES (?, ?, ?, ?, ?, 0, NOW())
+  ");
+
+  $stmt->execute([
+    $userId,
+    $type,
+    $title,
+    $message,
+    $severity
+  ]);
+}
+
+function get_user_profile(PDO $pdo, int $userId): ?array {
+  $stmt = $pdo->prepare("
+    SELECT
+      user_id,
+      province,
+      city_municipality
+    FROM user_profiles
+    WHERE user_id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$userId]);
+  return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+}
+
+function requirement_applies_to_user(PDO $pdo, array $requirement, array $profile): bool {
+  $reqStationId = $requirement["station_id"] !== null ? (int)$requirement["station_id"] : null;
+  $reqProvince = normalize_scope_value($requirement["province"] ?? null);
+  $reqCity = normalize_scope_value($requirement["city_municipality"] ?? null);
+
+  $userProvince = normalize_scope_value($profile["province"] ?? null);
+  $userCity = normalize_scope_value($profile["city_municipality"] ?? null);
+
+  if ($reqStationId === null && $reqProvince === null && $reqCity === null) {
+    return true;
+  }
+
+  if ($reqStationId === null) {
+    if (!$userProvince || !$userCity || !$reqProvince || !$reqCity) return false;
+
+    return
+      strcasecmp($userProvince, $reqProvince) === 0 &&
+      strcasecmp($userCity, $reqCity) === 0;
+  }
+
+  $stmt = $pdo->prepare("
+    SELECT
+      province,
+      city_municipality
+    FROM police_stations
+    WHERE id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$reqStationId]);
+  $station = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$station) return false;
+
+  $stationProvince = normalize_scope_value($station["province"] ?? null);
+  $stationCity = normalize_scope_value($station["city_municipality"] ?? null);
+
+  if (!$userProvince || !$userCity || !$stationProvince || !$stationCity) return false;
+
+  return
+    strcasecmp($userProvince, $stationProvince) === 0 &&
+    strcasecmp($userCity, $stationCity) === 0;
+}
+
 try {
   if ($_SERVER["REQUEST_METHOD"] !== "POST") {
     out(405, ["ok" => false, "message" => "Method not allowed"]);
@@ -207,6 +300,86 @@ try {
     ]);
   }
 
+  $profile = get_user_profile($pdo, $targetUserId);
+  if (!$profile) {
+    out(422, [
+      "ok" => false,
+      "message" => "User profile is incomplete."
+    ]);
+  }
+
+  $requirementsStmt = $pdo->query("
+    SELECT
+      r.id,
+      r.requirement_code,
+      r.requirement_name,
+      r.is_required,
+      r.is_system,
+      r.station_id,
+      r.city_municipality,
+      r.province,
+      r.active
+    FROM user_verification_requirements r
+    WHERE r.active = 1
+    ORDER BY r.is_system DESC, r.requirement_name ASC
+  ");
+  $allRequirements = $requirementsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+  $applicableRequirements = [];
+  foreach ($allRequirements as $req) {
+    if (requirement_applies_to_user($pdo, $req, $profile)) {
+      $applicableRequirements[] = $req;
+    }
+  }
+
+  $subStmt = $pdo->prepare("
+    SELECT
+      s.id,
+      s.requirement_id,
+      s.status,
+      s.uploaded_at
+    FROM user_requirement_submissions s
+    WHERE s.user_id = ?
+    ORDER BY s.requirement_id ASC, s.uploaded_at DESC, s.id DESC
+  ");
+  $subStmt->execute([$targetUserId]);
+  $subRows = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+  $latestByRequirement = [];
+  foreach ($subRows as $s) {
+    $reqId = (int)$s["requirement_id"];
+    if (!isset($latestByRequirement[$reqId])) {
+      $latestByRequirement[$reqId] = $s;
+    }
+  }
+
+  $notReady = [];
+  foreach ($applicableRequirements as $req) {
+    if ((int)($req["is_required"] ?? 0) !== 1) {
+      continue;
+    }
+
+    $reqId = (int)$req["id"];
+    $submission = $latestByRequirement[$reqId] ?? null;
+
+    if (!$submission) {
+      $notReady[] = $req["requirement_name"] . " (not uploaded)";
+      continue;
+    }
+
+    if (strtolower((string)($submission["status"] ?? "")) !== "approved") {
+      $notReady[] = $req["requirement_name"] . " (" . strtolower((string)$submission["status"]) . ")";
+    }
+  }
+
+  if (!empty($notReady)) {
+    out(422, [
+      "ok" => false,
+      "message" => "All required documents must be approved first.",
+      "pending_documents" => $notReady,
+    ]);
+  }
+
   $pdo->beginTransaction();
 
   $approveStmt = $pdo->prepare("
@@ -248,7 +421,7 @@ try {
         status = 'approved',
         reviewed_at = NOW(),
         reviewed_by = ?,
-        remarks = COALESCE(remarks, 'Approved by station admin')
+        remarks = 'Approved by station admin'
       WHERE id = ?
     ");
     $updateReqStmt->execute([
@@ -257,44 +430,14 @@ try {
     ]);
   }
 
-  $approveDocsStmt = $pdo->prepare("
-    UPDATE user_requirement_submissions
-    SET
-      status = 'approved',
-      reviewed_at = NOW(),
-      reviewed_by = ?,
-      remarks = CASE
-        WHEN remarks IS NULL OR remarks = '' THEN 'Approved by station admin'
-        ELSE remarks
-      END
-    WHERE user_id = ?
-      AND status = 'submitted'
-  ");
-  $approveDocsStmt->execute([
-    (int)$adminUser["id"],
+  queue_user_notification(
+    $pdo,
     $targetUserId,
-  ]);
-
-  $notifyStmt = $pdo->prepare("
-    INSERT INTO notification_alerts
-    (
-      user_id,
-      type,
-      title,
-      message,
-      severity,
-      is_read,
-      created_at
-    )
-    VALUES (?, ?, ?, ?, ?, 0, NOW())
-  ");
-  $notifyStmt->execute([
-    $targetUserId,
-    'ACCOUNT_STATUS',
-    'Account Verified',
-    'Your account has been verified by the station admin. You can now use report and panic features.',
-    'LOW'
-  ]);
+    "ACCOUNT_STATUS",
+    "Account Verified",
+    "Your account has been verified by the station admin. You can now use report and panic features.",
+    "LOW"
+  );
 
   $pdo->commit();
 

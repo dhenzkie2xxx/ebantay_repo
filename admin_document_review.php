@@ -15,7 +15,7 @@ if ($origin && in_array($origin, $allowedOrigins, true)) {
   header("Access-Control-Allow-Origin: $origin");
   header("Access-Control-Allow-Credentials: true");
 }
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -110,30 +110,6 @@ function get_admin_scope(PDO $pdo, array $adminUser): array {
   ];
 }
 
-function get_target_user(PDO $pdo, int $userId): ?array {
-  $stmt = $pdo->prepare("
-    SELECT
-      u.id,
-      u.firstname,
-      u.lastname,
-      u.email,
-      u.role,
-      u.valid,
-      u.account_status,
-      up.province,
-      up.city_municipality
-    FROM users u
-    LEFT JOIN user_profiles up ON up.user_id = u.id
-    WHERE u.id = ?
-      AND LOWER(u.role) = 'citizen'
-    LIMIT 1
-  ");
-  $stmt->execute([$userId]);
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-  return $row ?: null;
-}
-
 function can_admin_access_user(array $scope, array $targetUser): bool {
   if (($scope["role"] ?? "") === "super_admin") {
     return true;
@@ -177,13 +153,12 @@ function queue_user_notification(
     )
     VALUES (?, ?, ?, ?, ?, 0, NOW())
   ");
-
   $stmt->execute([
     $userId,
     $type,
     $title,
     $message,
-    $severity
+    $severity,
   ]);
 }
 
@@ -212,134 +187,162 @@ try {
   }
 
   $data = get_request_json();
-  $targetUserId = (int)($data["user_id"] ?? 0);
+
+  $submissionId = (int)($data["submission_id"] ?? 0);
+  $status = strtolower(trim((string)($data["status"] ?? "")));
   $remarks = trim((string)($data["remarks"] ?? ""));
-  $action = strtolower(trim((string)($data["action"] ?? "resubmission_required")));
 
-  if ($targetUserId <= 0) {
-    out(400, ["ok" => false, "message" => "Missing or invalid user_id"]);
+  if ($submissionId <= 0) {
+    out(400, ["ok" => false, "message" => "Missing or invalid submission_id"]);
   }
 
-  if ($remarks === "") {
-    out(400, ["ok" => false, "message" => "Remarks are required"]);
+  if (!in_array($status, ["approved", "rejected"], true)) {
+    out(400, ["ok" => false, "message" => "Invalid status"]);
   }
 
-  if (!in_array($action, ["rejected", "resubmission_required"], true)) {
-    $action = "resubmission_required";
+  if ($status === "rejected" && $remarks === "") {
+    out(400, ["ok" => false, "message" => "Remarks are required when rejecting a document"]);
   }
 
-  $targetUser = get_target_user($pdo, $targetUserId);
-  if (!$targetUser) {
-    out(404, ["ok" => false, "message" => "Citizen user not found"]);
+  $docStmt = $pdo->prepare("
+    SELECT
+      s.id,
+      s.user_id,
+      s.requirement_id,
+      s.status AS submission_status,
+      s.file_name,
+      s.mime_type,
+      s.remarks AS submission_remarks,
+      r.requirement_name,
+      r.requirement_code,
+      u.firstname,
+      u.lastname,
+      u.email,
+      up.province,
+      up.city_municipality
+    FROM user_requirement_submissions s
+    INNER JOIN user_verification_requirements r ON r.id = s.requirement_id
+    INNER JOIN users u ON u.id = s.user_id
+    LEFT JOIN user_profiles up ON up.user_id = u.id
+    WHERE s.id = ?
+      AND LOWER(u.role) = 'citizen'
+    LIMIT 1
+  ");
+  $docStmt->execute([$submissionId]);
+  $doc = $docStmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$doc) {
+    out(404, ["ok" => false, "message" => "Submission not found"]);
   }
 
-  if (!can_admin_access_user($scope, $targetUser)) {
+  if (!can_admin_access_user($scope, $doc)) {
     out(403, ["ok" => false, "message" => "You do not have access to this user"]);
   }
 
   $pdo->beginTransaction();
 
-  $updateUserStmt = $pdo->prepare("
-    UPDATE users
+  $updateStmt = $pdo->prepare("
+    UPDATE user_requirement_submissions
     SET
-      valid = 'unvalid',
-      account_status = ?,
-      approved_by = NULL,
-      approved_at = NULL,
-      rejected_reason = ?,
-      updated_at = NOW()
+      status = ?,
+      remarks = ?,
+      reviewed_at = NOW(),
+      reviewed_by = ?
     WHERE id = ?
-      AND LOWER(role) = 'citizen'
     LIMIT 1
   ");
-  $updateUserStmt->execute([
-    $action,
-    $remarks,
-    $targetUserId,
+  $updateStmt->execute([
+    $status,
+    $remarks !== "" ? $remarks : ($status === "approved" ? "Approved by station admin" : null),
+    (int)$adminUser["id"],
+    $submissionId,
   ]);
 
-  if ($updateUserStmt->rowCount() < 1) {
-    throw new RuntimeException("Failed to update user rejection status");
-  }
+  if ($status === "rejected") {
+    $userReason = "Please re-upload " . ($doc["requirement_name"] ?: "the required document") . ".";
+    if ($remarks !== "") {
+      $userReason .= " Reason: " . $remarks;
+    }
 
-  $latestReqStmt = $pdo->prepare("
-    SELECT id
-    FROM user_verification_requests
-    WHERE user_id = ?
-    ORDER BY id DESC
-    LIMIT 1
-  ");
-  $latestReqStmt->execute([$targetUserId]);
-  $latestReqId = $latestReqStmt->fetchColumn();
-
-  if ($latestReqId) {
-    $updateReqStmt = $pdo->prepare("
-      UPDATE user_verification_requests
+    $userStmt = $pdo->prepare("
+      UPDATE users
       SET
-        status = ?,
-        reviewed_at = NOW(),
-        reviewed_by = ?,
-        remarks = ?
+        valid = 'unvalid',
+        account_status = 'resubmission_required',
+        rejected_reason = ?,
+        approved_by = NULL,
+        approved_at = NULL,
+        updated_at = NOW()
       WHERE id = ?
+      LIMIT 1
     ");
-    $updateReqStmt->execute([
-      $action,
-      (int)$adminUser["id"],
-      $remarks,
-      (int)$latestReqId,
+    $userStmt->execute([
+      $userReason,
+      (int)$doc["user_id"],
     ]);
-  } else {
-    $insertReqStmt = $pdo->prepare("
-      INSERT INTO user_verification_requests
-      (
-        user_id,
-        status,
-        submitted_at,
-        reviewed_at,
-        reviewed_by,
-        remarks
-      )
-      VALUES (?, ?, NOW(), NOW(), ?, ?)
+
+    $latestReqStmt = $pdo->prepare("
+      SELECT id
+      FROM user_verification_requests
+      WHERE user_id = ?
+      ORDER BY id DESC
+      LIMIT 1
     ");
-    $insertReqStmt->execute([
-      $targetUserId,
-      $action,
-      (int)$adminUser["id"],
-      $remarks,
-    ]);
+    $latestReqStmt->execute([(int)$doc["user_id"]]);
+    $latestReqId = $latestReqStmt->fetchColumn();
+
+    if ($latestReqId) {
+      $vrStmt = $pdo->prepare("
+        UPDATE user_verification_requests
+        SET
+          status = 'resubmission_required',
+          reviewed_at = NOW(),
+          reviewed_by = ?,
+          remarks = ?
+        WHERE id = ?
+      ");
+      $vrStmt->execute([
+        (int)$adminUser["id"],
+        $userReason,
+        (int)$latestReqId,
+      ]);
+    }
+
+    queue_user_notification(
+      $pdo,
+      (int)$doc["user_id"],
+      "ACCOUNT_STATUS",
+      "Document Requires Resubmission",
+      $userReason,
+      "HIGH"
+    );
   }
 
-  queue_user_notification(
-    $pdo,
-    $targetUserId,
-    "ACCOUNT_STATUS",
-    $action === "rejected" ? "Account Rejected" : "Resubmission Required",
-    $remarks,
-    "HIGH"
-  );
+  if ($status === "approved") {
+    queue_user_notification(
+      $pdo,
+      (int)$doc["user_id"],
+      "ACCOUNT_STATUS",
+      "Document Approved",
+      ($doc["requirement_name"] ?: "A document") . " has been approved by the station admin.",
+      "LOW"
+    );
+  }
 
   $pdo->commit();
 
   out(200, [
     "ok" => true,
-    "message" => $action === "rejected"
-      ? "User rejected successfully"
-      : "User marked for resubmission successfully",
-    "scope" => [
-      "role" => $scope["role"],
-      "station_id" => $scope["station_id"],
-      "station_name" => $scope["station_name"],
-      "province" => $scope["province"],
-      "city_municipality" => $scope["city_municipality"],
-    ],
-    "user" => [
-      "id" => (int)$targetUser["id"],
-      "firstname" => $targetUser["firstname"],
-      "lastname" => $targetUser["lastname"],
-      "email" => $targetUser["email"],
-      "account_status" => $action,
-      "valid" => "unvalid",
-      "rejected_reason" => $remarks,
+    "message" => $status === "approved"
+      ? "Document approved successfully"
+      : "Document rejected successfully",
+    "submission" => [
+      "id" => (int)$doc["id"],
+      "user_id" => (int)$doc["user_id"],
+      "requirement_id" => (int)$doc["requirement_id"],
+      "requirement_name" => $doc["requirement_name"],
+      "status" => $status,
+      "remarks" => $remarks,
     ]
   ]);
 

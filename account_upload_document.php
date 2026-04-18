@@ -51,12 +51,10 @@ function requirement_applies_to_user(PDO $pdo, array $requirement, array $profil
   $userProvince = normalize_scope_value($profile["province"] ?? null);
   $userCity = normalize_scope_value($profile["city_municipality"] ?? null);
 
-  // Global requirement
   if ($reqStationId === null && $reqProvince === null && $reqCity === null) {
     return true;
   }
 
-  // Province + city scoped requirement
   if ($reqStationId === null) {
     if (!$userProvince || !$userCity || !$reqProvince || !$reqCity) return false;
 
@@ -65,7 +63,6 @@ function requirement_applies_to_user(PDO $pdo, array $requirement, array $profil
       strcasecmp($userCity, $reqCity) === 0;
   }
 
-  // Station-scoped requirement -> compare through station location
   $stmt = $pdo->prepare("
     SELECT
       province,
@@ -112,6 +109,14 @@ try {
     out(403, ["ok" => false, "message" => "Only citizen users can upload account documents"]);
   }
 
+  $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
+  if (in_array($currentStatus, ["verified", "active", "disabled"], true)) {
+    out(403, [
+      "ok" => false,
+      "message" => "Your verified account documents are already locked."
+    ]);
+  }
+
   $userId = (int)$user["id"];
   $requirementId = (int)($_POST["requirement_id"] ?? 0);
 
@@ -153,7 +158,6 @@ try {
     out(400, ["ok" => false, "message" => "Uploaded file is empty"]);
   }
 
-  // Optional size cap: 8MB
   $maxBytes = 8 * 1024 * 1024;
   if ($fileSize > $maxBytes) {
     out(400, ["ok" => false, "message" => "File exceeds 8MB upload limit"]);
@@ -162,7 +166,6 @@ try {
   $fileName = trim((string)($file["name"] ?? "document.bin"));
   $mimeType = trim((string)($file["type"] ?? ""));
 
-  // Safer MIME detection
   if (function_exists("finfo_open")) {
     $finfo = finfo_open(FILEINFO_MIME_TYPE);
     if ($finfo) {
@@ -230,7 +233,6 @@ try {
 
   $pdo->beginTransaction();
 
-  // Check if user already has a submission for this requirement
   $existingStmt = $pdo->prepare("
     SELECT
       id,
@@ -243,6 +245,10 @@ try {
   ");
   $existingStmt->execute([$userId, $requirementId]);
   $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
+
+  if ($existing && strtolower((string)($existing["status"] ?? "")) === "approved") {
+    throw new RuntimeException("This document is already approved and can no longer be replaced.");
+  }
 
   if ($existing) {
     $updateStmt = $pdo->prepare("
@@ -294,8 +300,6 @@ try {
     $submissionId = (int)$pdo->lastInsertId();
   }
 
-  // If user was previously rejected/resubmission_required, keep them in incomplete until full submit step
-  $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
   if (in_array($currentStatus, ["rejected", "resubmission_required"], true)) {
     $statusStmt = $pdo->prepare("
       UPDATE users
@@ -346,9 +350,11 @@ try {
     $pdo->rollBack();
   }
 
+  $message = $e instanceof RuntimeException ? $e->getMessage() : "Server error";
+
   out(500, [
     "ok" => false,
-    "message" => "Server error",
+    "message" => $message,
     "debug" => $e->getMessage()
   ]);
 }
