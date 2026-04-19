@@ -37,7 +37,11 @@ function get_user_profile(PDO $pdo, int $userId): ?array {
   return $row ?: null;
 }
 
-function requirement_applies_to_user(PDO $pdo, array $requirement, array $profile): bool {
+function requirement_applies_to_user(PDO $pdo, array $requirement, ?array $profile): bool {
+  if (!$profile) {
+    return (int)($requirement["is_system"] ?? 0) === 1;
+  }
+
   $reqStationId = $requirement["station_id"] !== null ? (int)$requirement["station_id"] : null;
   $reqProvince = normalize_scope_value($requirement["province"] ?? null);
   $reqCity = normalize_scope_value($requirement["city_municipality"] ?? null);
@@ -85,7 +89,15 @@ try {
     out(405, ["ok" => false, "message" => "Method not allowed"]);
   }
 
-  $user = auth_require_login($pdo);
+  $user = auth_get_user_by_token($pdo);
+
+  if (!$user) {
+    out(401, ["ok" => false, "message" => "Unauthorized"]);
+  }
+
+  if (function_exists("auth_check_token_expired") && auth_check_token_expired($user)) {
+    out(401, ["ok" => false, "message" => "Token expired"]);
+  }
 
   if (strtolower((string)($user["role"] ?? "")) !== "citizen") {
     out(403, ["ok" => false, "message" => "Only citizen users can access account completion"]);
@@ -124,9 +136,7 @@ try {
 
   $applicableRequirements = [];
   foreach ($allRequirements as $req) {
-    if ($profile && requirement_applies_to_user($pdo, $req, $profile)) {
-      $applicableRequirements[] = $req;
-    } elseif (!$profile && (int)($req["is_system"] ?? 0) === 1) {
+    if (requirement_applies_to_user($pdo, $req, $profile)) {
       $applicableRequirements[] = $req;
     }
   }
@@ -235,7 +245,6 @@ try {
       "rejected_reason" => $user["rejected_reason"] ?? null,
       "is_email_verified" => (int)($user["is_email_verified"] ?? 0),
 
-      // account safety fields
       "false_report_count" => (int)($user["false_report_count"] ?? 0),
       "false_alarm_count" => (int)($user["false_alarm_count"] ?? 0),
       "account_flag_status" => $user["account_flag_status"] ?? "none",
