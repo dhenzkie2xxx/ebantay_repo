@@ -1,8 +1,15 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/hotspot_lib.php";
+require_once __DIR__ . "/user_flag_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
+
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
+  exit;
+}
 
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
@@ -13,9 +20,9 @@ $incidentPhase = strtoupper(trim((string)($data["incident_phase"] ?? "")));
 $caseStatus = strtoupper(trim((string)($data["case_status"] ?? "")));
 $notes = trim((string)($data["admin_notes"] ?? ""));
 
-$allowedVerification = ["PENDING","VERIFIED","FALSE_REPORT","DUPLICATE"];
-$allowedPhase = ["REPORTED","UNDER_VERIFICATION","BLOTTERED","UNDER_INVESTIGATION","FILED_IN_COURT","RESOLVED","REJECTED"];
-$allowedCase = ["OPEN","CLEARED","SOLVED","CLOSED","UNFOUNDED"];
+$allowedVerification = ["PENDING", "VERIFIED", "FALSE_REPORT", "DUPLICATE"];
+$allowedPhase = ["REPORTED", "UNDER_VERIFICATION", "BLOTTERED", "UNDER_INVESTIGATION", "FILED_IN_COURT", "RESOLVED", "REJECTED"];
+$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
 
 if (
   !is_array($ids) || count($ids) === 0 ||
@@ -23,16 +30,12 @@ if (
   !in_array($incidentPhase, $allowedPhase, true) ||
   !in_array($caseStatus, $allowedCase, true)
 ) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "Invalid payload"]);
-  exit;
+  out(400, ["ok" => false, "message" => "Invalid payload"]);
 }
 
 $ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($v) => $v > 0)));
 if (!$ids) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "No valid IDs"]);
-  exit;
+  out(400, ["ok" => false, "message" => "No valid IDs"]);
 }
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
@@ -103,12 +106,10 @@ try {
 
   if (!$oldRows) {
     $pdo->rollBack();
-    http_response_code(404);
-    echo json_encode([
+    out(404, [
       "ok" => false,
       "message" => "No incidents found"
     ]);
-    exit;
   }
 
   $upd = $pdo->prepare("
@@ -146,6 +147,10 @@ try {
   ");
 
   foreach ($oldRows as $row) {
+    $oldVerification = strtoupper((string)($row["verification_status"] ?? ""));
+    $oldPhase = strtoupper((string)($row["incident_phase"] ?? ""));
+    $oldCase = strtoupper((string)($row["case_status"] ?? ""));
+
     $upd->execute([
       $verificationStatus,
       $incidentPhase,
@@ -171,10 +176,23 @@ try {
 
     $reporterUserId = (int)($row["reporter_user_id"] ?? 0);
 
+    if (
+      $verificationStatus === "FALSE_REPORT" &&
+      $oldVerification !== "FALSE_REPORT" &&
+      $reporterUserId > 0
+    ) {
+      flag_user_after_false_report(
+        $pdo,
+        $reporterUserId,
+        (int)$row["id"],
+        $adminId
+      );
+    }
+
     $changed =
-      strtoupper((string)$row["verification_status"]) !== $verificationStatus ||
-      strtoupper((string)$row["incident_phase"]) !== $incidentPhase ||
-      strtoupper((string)$row["case_status"]) !== $caseStatus;
+      $oldVerification !== $verificationStatus ||
+      $oldPhase !== $incidentPhase ||
+      $oldCase !== $caseStatus;
 
     if ($reporterUserId > 0 && $changed) {
       $incidentTitle = trim((string)($row["title"] ?? ""));
@@ -215,15 +233,15 @@ try {
 
   $pdo->commit();
 
-  echo json_encode([
+  out(200, [
     "ok" => true,
     "message" => "Batch update successful",
     "updated_count" => count($oldRows)
   ]);
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) $pdo->rollBack();
-  http_response_code(500);
-  echo json_encode([
+
+  out(500, [
     "ok" => false,
     "message" => "Server error",
     "debug" => $e->getMessage()

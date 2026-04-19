@@ -92,9 +92,7 @@ function flag_user_after_false_report(
     SELECT
       false_report_count,
       false_alarm_count,
-      account_flag_status,
-      firstname,
-      lastname
+      account_flag_status
     FROM users
     WHERE id = ?
     LIMIT 1

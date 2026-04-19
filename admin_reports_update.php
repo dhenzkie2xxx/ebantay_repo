@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . "/require_admin_or_super_admin.php";
+require_once __DIR__ . "/user_flag_helpers.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -196,11 +197,21 @@ try {
   ]);
 
   $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
+  $oldVerification = strtoupper((string)($old["verification_status"] ?? ""));
+
+  if ($verificationStatus === "FALSE_REPORT" && $oldVerification !== "FALSE_REPORT" && $reporterUserId > 0) {
+    flag_user_after_false_report(
+      $pdo,
+      $reporterUserId,
+      $id,
+      $adminId
+    );
+  }
 
   if (
     $reporterUserId > 0 &&
     (
-      strtoupper((string)$old["verification_status"]) !== $verificationStatus ||
+      $oldVerification !== $verificationStatus ||
       strtoupper((string)$old["incident_phase"]) !== $incidentPhase ||
       strtoupper((string)$old["case_status"]) !== $caseStatus
     )

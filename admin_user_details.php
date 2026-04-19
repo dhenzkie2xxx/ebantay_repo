@@ -15,7 +15,7 @@ if ($origin && in_array($origin, $allowedOrigins, true)) {
   header("Access-Control-Allow-Origin: $origin");
   header("Access-Control-Allow-Credentials: true");
 }
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
@@ -44,76 +44,117 @@ function get_bearer_or_query_token(): string {
   return "";
 }
 
-function can_admin_access_user(PDO $pdo, array $adminUser, int $targetUserId): array {
+function get_admin_scope(PDO $pdo, array $adminUser): array {
   $role = strtolower((string)($adminUser["role"] ?? ""));
 
   if ($role === "super_admin") {
-    return ["ok" => true];
+    return [
+      "ok" => true,
+      "role" => "super_admin",
+      "station_id" => null,
+      "province" => null,
+      "city_municipality" => null,
+      "station_name" => null,
+    ];
   }
 
-  $stationStmt = $pdo->prepare("
+  if ($role !== "admin") {
+    return ["ok" => false, "message" => "Access denied"];
+  }
+
+  $stmt = $pdo->prepare("
     SELECT
       ps.id,
       ps.station_name,
-      ps.city_municipality,
-      ps.province
+      ps.province,
+      ps.city_municipality
     FROM users u
     INNER JOIN police_stations ps ON ps.id = u.station_id
     WHERE u.id = ?
     LIMIT 1
   ");
-  $stationStmt->execute([(int)$adminUser["id"]]);
-  $station = $stationStmt->fetch(PDO::FETCH_ASSOC);
+  $stmt->execute([(int)$adminUser["id"]]);
+  $station = $stmt->fetch(PDO::FETCH_ASSOC);
 
   if (!$station) {
     return ["ok" => false, "message" => "No police station is linked to this admin account"];
   }
 
-  $scopeProvince = normalize_scope_value($station["province"] ?? null);
-  $scopeCity = normalize_scope_value($station["city_municipality"] ?? null);
+  $province = normalize_scope_value($station["province"] ?? null);
+  $city = normalize_scope_value($station["city_municipality"] ?? null);
 
-  if (!$scopeProvince || !$scopeCity) {
+  if (!$province || !$city) {
     return ["ok" => false, "message" => "The linked station does not have a complete province/city scope"];
-  }
-
-  $userScopeStmt = $pdo->prepare("
-    SELECT
-      up.province,
-      up.city_municipality
-    FROM users u
-    LEFT JOIN user_profiles up ON up.user_id = u.id
-    WHERE u.id = ?
-      AND LOWER(u.role) = 'citizen'
-    LIMIT 1
-  ");
-  $userScopeStmt->execute([$targetUserId]);
-  $userScope = $userScopeStmt->fetch(PDO::FETCH_ASSOC);
-
-  if (!$userScope) {
-    return ["ok" => false, "message" => "Citizen user not found"];
-  }
-
-  $userProvince = normalize_scope_value($userScope["province"] ?? null);
-  $userCity = normalize_scope_value($userScope["city_municipality"] ?? null);
-
-  if (
-    !$userProvince ||
-    !$userCity ||
-    strcasecmp($userProvince, $scopeProvince) !== 0 ||
-    strcasecmp($userCity, $scopeCity) !== 0
-  ) {
-    return ["ok" => false, "message" => "You do not have access to this user"];
   }
 
   return [
     "ok" => true,
-    "scope" => [
-      "station_id" => (int)$station["id"],
-      "station_name" => $station["station_name"] ?? null,
-      "province" => $scopeProvince,
-      "city_municipality" => $scopeCity
-    ]
+    "role" => "admin",
+    "station_id" => (int)$station["id"],
+    "station_name" => $station["station_name"] ?? null,
+    "province" => $province,
+    "city_municipality" => $city,
   ];
+}
+
+function can_admin_access_user(array $scope, array $targetUser): bool {
+  if (($scope["role"] ?? "") === "super_admin") {
+    return true;
+  }
+
+  $targetProvince = normalize_scope_value($targetUser["province"] ?? null);
+  $targetCity = normalize_scope_value($targetUser["city_municipality"] ?? null);
+
+  if (!$targetProvince || !$targetCity) {
+    return false;
+  }
+
+  return
+    strcasecmp((string)$scope["province"], (string)$targetProvince) === 0 &&
+    strcasecmp((string)$scope["city_municipality"], (string)$targetCity) === 0;
+}
+
+function requirement_applies_to_user(PDO $pdo, array $requirement, array $profile): bool {
+  $reqStationId = $requirement["station_id"] !== null ? (int)$requirement["station_id"] : null;
+  $reqProvince = normalize_scope_value($requirement["province"] ?? null);
+  $reqCity = normalize_scope_value($requirement["city_municipality"] ?? null);
+
+  $userProvince = normalize_scope_value($profile["province"] ?? null);
+  $userCity = normalize_scope_value($profile["city_municipality"] ?? null);
+
+  if ($reqStationId === null && $reqProvince === null && $reqCity === null) {
+    return true;
+  }
+
+  if ($reqStationId === null) {
+    if (!$userProvince || !$userCity || !$reqProvince || !$reqCity) return false;
+
+    return
+      strcasecmp($userProvince, $reqProvince) === 0 &&
+      strcasecmp($userCity, $reqCity) === 0;
+  }
+
+  $stmt = $pdo->prepare("
+    SELECT
+      province,
+      city_municipality
+    FROM police_stations
+    WHERE id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$reqStationId]);
+  $station = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$station) return false;
+
+  $stationProvince = normalize_scope_value($station["province"] ?? null);
+  $stationCity = normalize_scope_value($station["city_municipality"] ?? null);
+
+  if (!$userProvince || !$userCity || !$stationProvince || !$stationCity) return false;
+
+  return
+    strcasecmp($userProvince, $stationProvince) === 0 &&
+    strcasecmp($userCity, $stationCity) === 0;
 }
 
 try {
@@ -135,9 +176,9 @@ try {
     out(401, ["ok" => false, "message" => "Token expired"]);
   }
 
-  $adminRole = strtolower((string)($adminUser["role"] ?? ""));
-  if (!in_array($adminRole, ["admin", "super_admin"], true)) {
-    out(403, ["ok" => false, "message" => "Access denied"]);
+  $scope = get_admin_scope($pdo, $adminUser);
+  if (!($scope["ok"] ?? false)) {
+    out(403, ["ok" => false, "message" => $scope["message"] ?? "Access denied"]);
   }
 
   $targetUserId = (int)($_GET["id"] ?? 0);
@@ -145,12 +186,7 @@ try {
     out(400, ["ok" => false, "message" => "Missing or invalid user id"]);
   }
 
-  $access = can_admin_access_user($pdo, $adminUser, $targetUserId);
-  if (!$access["ok"]) {
-    out(403, ["ok" => false, "message" => $access["message"] ?? "Access denied"]);
-  }
-
-  $stmt = $pdo->prepare("
+  $userStmt = $pdo->prepare("
     SELECT
       u.id,
       u.firstname,
@@ -160,13 +196,18 @@ try {
       u.role,
       u.valid,
       u.account_status,
-      u.is_email_verified,
+      u.false_report_count,
+      u.false_alarm_count,
+      u.account_flag_status,
+      u.flagged_at,
+      u.flagged_reason,
+      u.suspended_at,
+      u.suspended_by,
+      u.suspension_reason,
       u.approved_by,
       u.approved_at,
       u.rejected_reason,
-      u.created_at,
-      u.updated_at,
-
+      u.is_email_verified,
       up.mobile_number,
       up.address_text,
       up.address_lat,
@@ -174,63 +215,61 @@ try {
       up.barangay,
       up.city_municipality,
       up.province,
-      up.region,
-      up.created_at AS profile_created_at,
-      up.updated_at AS profile_updated_at
-
+      up.region
     FROM users u
     LEFT JOIN user_profiles up ON up.user_id = u.id
     WHERE u.id = ?
       AND LOWER(u.role) = 'citizen'
     LIMIT 1
   ");
-  $stmt->execute([$targetUserId]);
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+  $userStmt->execute([$targetUserId]);
+  $userRow = $userStmt->fetch(PDO::FETCH_ASSOC);
 
-  if (!$row) {
+  if (!$userRow) {
     out(404, ["ok" => false, "message" => "Citizen user not found"]);
   }
 
-  $requirementsSql = "
+  if (!can_admin_access_user($scope, $userRow)) {
+    out(403, ["ok" => false, "message" => "You do not have access to this user"]);
+  }
+
+  $profile = [
+    "user_id" => (int)$userRow["id"],
+    "mobile_number" => $userRow["mobile_number"] ?? null,
+    "address_text" => $userRow["address_text"] ?? null,
+    "address_lat" => $userRow["address_lat"] !== null ? (float)$userRow["address_lat"] : null,
+    "address_lng" => $userRow["address_lng"] !== null ? (float)$userRow["address_lng"] : null,
+    "barangay" => $userRow["barangay"] ?? null,
+    "city_municipality" => $userRow["city_municipality"] ?? null,
+    "province" => $userRow["province"] ?? null,
+    "region" => $userRow["region"] ?? null,
+  ];
+
+  $requirementsStmt = $pdo->query("
     SELECT
       r.id,
-      r.requirement_code AS code,
-      r.requirement_name AS name,
+      r.requirement_code,
+      r.requirement_name,
       r.is_required,
       r.is_system,
       r.station_id,
       r.city_municipality,
       r.province,
-      r.active,
-      r.created_by,
-      r.created_at,
-      r.updated_at
+      r.active
     FROM user_verification_requirements r
     WHERE r.active = 1
-      AND (
-        (r.station_id IS NULL AND r.city_municipality IS NULL AND r.province IS NULL)
-        OR (r.station_id IS NULL AND LOWER(COALESCE(r.province, '')) = LOWER(?) AND LOWER(COALESCE(r.city_municipality, '')) = LOWER(?))
-  ";
+    ORDER BY r.is_system DESC, r.requirement_name ASC
+  ");
+  $allRequirements = $requirementsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-  $params = [
-    $row["province"] ?? "",
-    $row["city_municipality"] ?? "",
-  ];
-
-  if ($adminRole !== "super_admin" && isset($access["scope"]["station_id"])) {
-    $requirementsSql .= " OR r.station_id = ? ";
-    $params[] = (int)$access["scope"]["station_id"];
+  $applicableRequirements = [];
+  foreach ($allRequirements as $req) {
+    if (requirement_applies_to_user($pdo, $req, $profile)) {
+      $applicableRequirements[] = $req;
+    }
   }
 
-  $requirementsSql .= ")
-    ORDER BY r.is_system DESC, r.requirement_name ASC
-  ";
-
-  $reqStmt = $pdo->prepare($requirementsSql);
-  $reqStmt->execute($params);
-  $requirements = $reqStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-  $subStmt = $pdo->prepare("
+  $submissionStmt = $pdo->prepare("
     SELECT
       s.id,
       s.user_id,
@@ -242,128 +281,144 @@ try {
       s.remarks,
       s.uploaded_at,
       s.reviewed_at,
-      s.reviewed_by,
-      r.requirement_code,
-      r.requirement_name
+      s.reviewed_by
     FROM user_requirement_submissions s
-    INNER JOIN user_verification_requirements r
-      ON r.id = s.requirement_id
     WHERE s.user_id = ?
-    ORDER BY s.uploaded_at DESC, s.id DESC
+    ORDER BY s.requirement_id ASC, s.uploaded_at DESC, s.id DESC
   ");
-  $subStmt->execute([$targetUserId]);
-  $submissionsRaw = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+  $submissionStmt->execute([$targetUserId]);
+  $submissionRows = $submissionStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+  $latestSubmissionByRequirement = [];
+  foreach ($submissionRows as $s) {
+    $reqId = (int)$s["requirement_id"];
+    if (!isset($latestSubmissionByRequirement[$reqId])) {
+      $latestSubmissionByRequirement[$reqId] = $s;
+    }
+  }
 
   $scheme = (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] !== "off") ? "https" : "http";
   $host = $_SERVER["HTTP_HOST"] ?? "";
   $baseUrl = $host !== "" ? $scheme . "://" . $host : "";
   $tokenParam = rawurlencode($token);
 
-  $submissions = array_map(function ($s) use ($baseUrl, $tokenParam) {
-    $id = (int)$s["id"];
-    $path = "/get_user_document.php?id=" . $id . "&token=" . $tokenParam;
+  $requirements = [];
+  $submissions = [];
 
-    return [
-      "id" => $id,
-      "user_id" => (int)$s["user_id"],
-      "requirement_id" => (int)$s["requirement_id"],
-      "requirement_code" => $s["requirement_code"],
-      "requirement_name" => $s["requirement_name"],
-      "file_name" => $s["file_name"],
-      "mime_type" => $s["mime_type"],
-      "file_size" => $s["file_size"] !== null ? (int)$s["file_size"] : null,
-      "status" => strtoupper((string)($s["status"] ?? "submitted")),
-      "remarks" => $s["remarks"],
-      "uploaded_at" => $s["uploaded_at"],
-      "reviewed_at" => $s["reviewed_at"],
-      "reviewed_by" => $s["reviewed_by"] !== null ? (int)$s["reviewed_by"] : null,
-      "preview_url" => $baseUrl . $path . "&mode=preview",
-      "download_url" => $baseUrl . $path . "&mode=download"
+  foreach ($applicableRequirements as $req) {
+    $reqId = (int)$req["id"];
+    $latest = $latestSubmissionByRequirement[$reqId] ?? null;
+
+    $submissionPayload = null;
+    if ($latest) {
+      $docPath = "/get_user_document.php?id=" . (int)$latest["id"] . "&token=" . $tokenParam;
+
+      $submissionPayload = [
+        "id" => (int)$latest["id"],
+        "user_id" => (int)$latest["user_id"],
+        "requirement_id" => (int)$latest["requirement_id"],
+        "file_name" => $latest["file_name"] ?? null,
+        "mime_type" => $latest["mime_type"] ?? null,
+        "file_size" => $latest["file_size"] !== null ? (int)$latest["file_size"] : null,
+        "status" => strtoupper((string)($latest["status"] ?? "submitted")),
+        "remarks" => $latest["remarks"] ?? null,
+        "uploaded_at" => $latest["uploaded_at"] ?? null,
+        "reviewed_at" => $latest["reviewed_at"] ?? null,
+        "reviewed_by" => $latest["reviewed_by"] !== null ? (int)$latest["reviewed_by"] : null,
+        "preview_url" => $baseUrl . $docPath . "&mode=preview",
+        "download_url" => $baseUrl . $docPath . "&mode=download",
+      ];
+
+      $submissions[] = [
+        "id" => (int)$latest["id"],
+        "requirement_id" => (int)$latest["requirement_id"],
+        "requirement_code" => $req["requirement_code"],
+        "requirement_name" => $req["requirement_name"],
+        "file_name" => $latest["file_name"] ?? null,
+        "mime_type" => $latest["mime_type"] ?? null,
+        "file_size" => $latest["file_size"] !== null ? (int)$latest["file_size"] : null,
+        "status" => strtoupper((string)($latest["status"] ?? "submitted")),
+        "remarks" => $latest["remarks"] ?? null,
+        "uploaded_at" => $latest["uploaded_at"] ?? null,
+        "reviewed_at" => $latest["reviewed_at"] ?? null,
+        "reviewed_by" => $latest["reviewed_by"] !== null ? (int)$latest["reviewed_by"] : null,
+        "preview_url" => $baseUrl . $docPath . "&mode=preview",
+        "download_url" => $baseUrl . $docPath . "&mode=download",
+      ];
+    }
+
+    $requirements[] = [
+      "id" => $reqId,
+      "code" => $req["requirement_code"],
+      "name" => $req["requirement_name"],
+      "is_required" => (int)$req["is_required"] === 1,
+      "is_system" => (int)$req["is_system"] === 1,
+      "submission" => $submissionPayload,
     ];
-  }, $submissionsRaw);
+  }
+
+  usort($submissions, function ($a, $b) {
+    return strcmp((string)$a["requirement_name"], (string)$b["requirement_name"]);
+  });
 
   $vrStmt = $pdo->prepare("
     SELECT
-      v.id,
-      v.user_id,
-      v.status,
-      v.submitted_at,
-      v.reviewed_at,
-      v.reviewed_by,
-      v.remarks
-    FROM user_verification_requests v
-    WHERE v.user_id = ?
-    ORDER BY v.id DESC
+      id,
+      user_id,
+      status,
+      submitted_at,
+      reviewed_at,
+      reviewed_by,
+      remarks
+    FROM user_verification_requests
+    WHERE user_id = ?
+    ORDER BY id DESC
     LIMIT 1
   ");
   $vrStmt->execute([$targetUserId]);
-  $verificationRequest = $vrStmt->fetch(PDO::FETCH_ASSOC);
+  $verificationRequest = $vrStmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
   out(200, [
     "ok" => true,
-    "scope" => $access["scope"] ?? [
-      "role" => $adminRole
+    "scope" => [
+      "role" => $scope["role"],
+      "station_id" => $scope["station_id"],
+      "station_name" => $scope["station_name"],
+      "province" => $scope["province"],
+      "city_municipality" => $scope["city_municipality"],
     ],
     "user" => [
-      "id" => (int)$row["id"],
-      "firstname" => $row["firstname"],
-      "lastname" => $row["lastname"],
-      "email" => $row["email"],
-      "username" => $row["username"],
-      "role" => $row["role"],
-      "valid" => $row["valid"],
-      "account_status" => strtolower((string)($row["account_status"] ?? "pending")),
-      "is_email_verified" => (int)($row["is_email_verified"] ?? 0),
-      "approved_by" => $row["approved_by"] !== null ? (int)$row["approved_by"] : null,
-      "approved_at" => $row["approved_at"],
-      "rejected_reason" => $row["rejected_reason"],
-      "created_at" => $row["created_at"],
-      "updated_at" => $row["updated_at"]
+      "id" => (int)$userRow["id"],
+      "firstname" => $userRow["firstname"],
+      "lastname" => $userRow["lastname"],
+      "email" => $userRow["email"],
+      "username" => $userRow["username"],
+      "role" => $userRow["role"],
+      "valid" => $userRow["valid"],
+      "account_status" => $userRow["account_status"],
+      "false_report_count" => (int)($userRow["false_report_count"] ?? 0),
+      "false_alarm_count" => (int)($userRow["false_alarm_count"] ?? 0),
+      "account_flag_status" => $userRow["account_flag_status"] ?? "none",
+      "flagged_at" => $userRow["flagged_at"] ?? null,
+      "flagged_reason" => $userRow["flagged_reason"] ?? null,
+      "suspended_at" => $userRow["suspended_at"] ?? null,
+      "suspended_by" => $userRow["suspended_by"] !== null ? (int)$userRow["suspended_by"] : null,
+      "suspension_reason" => $userRow["suspension_reason"] ?? null,
+      "approved_by" => $userRow["approved_by"] !== null ? (int)$userRow["approved_by"] : null,
+      "approved_at" => $userRow["approved_at"] ?? null,
+      "rejected_reason" => $userRow["rejected_reason"] ?? null,
+      "is_email_verified" => (int)($userRow["is_email_verified"] ?? 0),
     ],
-    "profile" => [
-      "mobile_number" => $row["mobile_number"],
-      "address_text" => $row["address_text"],
-      "address_lat" => $row["address_lat"] !== null ? (float)$row["address_lat"] : null,
-      "address_lng" => $row["address_lng"] !== null ? (float)$row["address_lng"] : null,
-      "barangay" => $row["barangay"],
-      "city_municipality" => $row["city_municipality"],
-      "province" => $row["province"],
-      "region" => $row["region"],
-      "profile_created_at" => $row["profile_created_at"],
-      "profile_updated_at" => $row["profile_updated_at"]
-    ],
-    "requirements" => array_map(function ($r) {
-      return [
-        "id" => (int)$r["id"],
-        "code" => $r["code"],
-        "name" => $r["name"],
-        "is_required" => (int)$r["is_required"] === 1,
-        "is_system" => (int)$r["is_system"] === 1,
-        "station_id" => $r["station_id"] !== null ? (int)$r["station_id"] : null,
-        "city_municipality" => $r["city_municipality"],
-        "province" => $r["province"],
-        "active" => (int)$r["active"] === 1,
-        "created_by" => $r["created_by"] !== null ? (int)$r["created_by"] : null,
-        "created_at" => $r["created_at"],
-        "updated_at" => $r["updated_at"]
-      ];
-    }, $requirements),
+    "profile" => $profile,
+    "requirements" => $requirements,
     "submissions" => $submissions,
-    "verification_request" => $verificationRequest ? [
-      "id" => (int)$verificationRequest["id"],
-      "user_id" => (int)$verificationRequest["user_id"],
-      "status" => strtolower((string)($verificationRequest["status"] ?? "pending")),
-      "submitted_at" => $verificationRequest["submitted_at"],
-      "reviewed_at" => $verificationRequest["reviewed_at"],
-      "reviewed_by" => $verificationRequest["reviewed_by"] !== null ? (int)$verificationRequest["reviewed_by"] : null,
-      "remarks" => $verificationRequest["remarks"]
-    ] : null
+    "verification_request" => $verificationRequest,
   ]);
 
 } catch (Throwable $e) {
   out(500, [
     "ok" => false,
     "message" => "Server error",
-    "debug" => $e->getMessage()
+    "debug" => $e->getMessage(),
   ]);
 }
