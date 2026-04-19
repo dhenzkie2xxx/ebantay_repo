@@ -9,6 +9,77 @@ function out($code, $payload) {
   exit;
 }
 
+function haversineMeters($lat1, $lng1, $lat2, $lng2) {
+  $earth = 6371000;
+  $dLat = deg2rad($lat2 - $lat1);
+  $dLng = deg2rad($lng2 - $lng1);
+
+  $a = sin($dLat / 2) * sin($dLat / 2)
+     + cos(deg2rad($lat1)) * cos(deg2rad($lat2))
+     * sin($dLng / 2) * sin($dLng / 2);
+
+  return 2 * $earth * asin(min(1, sqrt($a)));
+}
+
+function has_duplicate_candidate(PDO $pdo, array $row): bool {
+  if (
+    !isset($row["id"], $row["incident_type"], $row["lat"], $row["lng"]) ||
+    $row["lat"] === null ||
+    $row["lng"] === null ||
+    trim((string)$row["incident_type"]) === ""
+  ) {
+    return false;
+  }
+
+  $stmt = $pdo->prepare("
+    SELECT
+      id,
+      lat,
+      lng,
+      date_incident_from,
+      created_at
+    FROM incident_reports
+    WHERE id <> ?
+      AND incident_type = ?
+      AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
+      AND created_at >= DATE_SUB(NOW(), INTERVAL 6 HOUR)
+    ORDER BY created_at DESC
+    LIMIT 30
+  ");
+  $stmt->execute([
+    (int)$row["id"],
+    (string)$row["incident_type"]
+  ]);
+  $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+  $baseTime = strtotime((string)($row["date_incident_from"] ?: $row["created_at"]));
+  if ($baseTime === false) {
+    return false;
+  }
+
+  foreach ($candidates as $c) {
+    if ($c["lat"] === null || $c["lng"] === null) continue;
+
+    $distanceM = haversineMeters(
+      (float)$row["lat"],
+      (float)$row["lng"],
+      (float)$c["lat"],
+      (float)$c["lng"]
+    );
+
+    if ($distanceM > 200) continue;
+
+    $candidateTime = strtotime((string)($c["date_incident_from"] ?: $c["created_at"]));
+    if ($candidateTime === false) continue;
+
+    if (abs($baseTime - $candidateTime) <= 7200) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 $verification_status = strtoupper(trim($_GET["status"] ?? "ALL"));
 $allowed = ["ALL", "PENDING", "VERIFIED", "FALSE_REPORT", "DUPLICATE"];
 if (!in_array($verification_status, $allowed, true)) $verification_status = "ALL";
@@ -169,7 +240,7 @@ echo json_encode([
     "total" => $total,
     "total_pages" => $limit > 0 ? (int)ceil($total / $limit) : 1
   ],
-  "reports" => array_map(function($r) {
+  "reports" => array_map(function($r) use ($pdo) {
     return [
       "id" => (int)$r["id"],
       "incident_code" => $r["incident_code"],
@@ -201,6 +272,7 @@ echo json_encode([
       "reviewed_at" => $r["reviewed_at"],
       "resolved_at" => $r["resolved_at"],
       "photo_count" => (int)$r["photo_count"],
+      "has_duplicate_candidate" => has_duplicate_candidate($pdo, $r),
       "reporter" => [
         "id" => $r["user_id"] !== null ? (int)$r["user_id"] : null,
         "firstname" => $r["firstname"],

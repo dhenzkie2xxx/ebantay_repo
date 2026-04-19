@@ -61,7 +61,14 @@ function normalize_narrative_for_match(string $text): string {
   return trim($text);
 }
 
-function compute_severity_score(string $crimeCategory, int $victimCount, int $suspectCount, int $propertyLossFlag, string $riskStatus, int $isHotspotRelated): float {
+function compute_severity_score(
+  string $crimeCategory,
+  int $victimCount,
+  int $suspectCount,
+  int $propertyLossFlag,
+  string $riskStatus,
+  int $isHotspotRelated
+): float {
   $crimeWeights = [
     'INDEX' => 3.0,
     'SPECIAL_LAW' => 2.5,
@@ -78,7 +85,15 @@ function compute_severity_score(string $crimeCategory, int $victimCount, int $su
   return round($C + $V + $S + $P + $R, 2);
 }
 
-function find_recent_same_user_incident(PDO $pdo, int $userId, string $incidentType, float $lat, float $lng, string $dateIncidentFromSql, int $windowMinutes = 20): ?array {
+function find_recent_same_user_incident(
+  PDO $pdo,
+  int $userId,
+  string $incidentType,
+  float $lat,
+  float $lng,
+  string $dateIncidentFromSql,
+  int $windowMinutes = 20
+): ?array {
   $stmt = $pdo->prepare("
     SELECT id, incident_code, incident_type, lat, lng, date_incident_from, created_at
     FROM incident_reports
@@ -94,46 +109,93 @@ function find_recent_same_user_incident(PDO $pdo, int $userId, string $incidentT
 
   foreach ($rows as $r) {
     $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
-    $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime((string)($r['date_incident_from'] ?: $r['created_at'])));
+    $baseTime = (string)($r['date_incident_from'] ?: $r['created_at']);
+    $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime($baseTime));
+
     if ($d <= 150 && $timeDiff <= ($windowMinutes * 60)) {
       $r['distance_m'] = (int) round($d);
+      $r['time_diff_sec'] = (int)$timeDiff;
       return $r;
     }
   }
+
   return null;
 }
 
-function find_duplicate_incident(PDO $pdo, int $userId, string $incidentType, string $narrative, float $lat, float $lng, string $dateIncidentFromSql): ?array {
+/*
+|--------------------------------------------------------------------------
+| Rule-based duplicate detection aligned to manuscript:
+| - same incident_type
+| - spatial threshold via Haversine
+| - time threshold via date_incident_from
+| - narrative similarity is supplementary only
+|--------------------------------------------------------------------------
+*/
+function find_duplicate_incident(
+  PDO $pdo,
+  int $userId,
+  string $incidentType,
+  string $narrative,
+  float $lat,
+  float $lng,
+  string $dateIncidentFromSql,
+  int $distanceThresholdMeters = 200,
+  int $timeThresholdSeconds = 7200
+): ?array {
   $stmt = $pdo->prepare("
-    SELECT id, incident_code, reporter_user_id, incident_type, narrative, lat, lng, date_incident_from, created_at
+    SELECT
+      id,
+      incident_code,
+      reporter_user_id,
+      incident_type,
+      narrative,
+      lat,
+      lng,
+      date_incident_from,
+      created_at,
+      verification_status
     FROM incident_reports
     WHERE reporter_user_id <> ?
       AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
+      AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
       AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
-      AND verification_status IN ('PENDING','VERIFIED','DUPLICATE')
     ORDER BY created_at DESC
-    LIMIT 50
+    LIMIT 80
   ");
   $stmt->execute([$userId, $incidentType]);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   $needle = normalize_narrative_for_match($narrative);
+
   foreach ($rows as $r) {
-    $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
-    if ($d > 200) continue;
-
-    $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime((string)($r['date_incident_from'] ?: $r['created_at'])));
-    if ($timeDiff > (60 * 60 * 2)) continue;
-
-    $existing = normalize_narrative_for_match((string)$r['narrative']);
-    similar_text($needle, $existing, $percent);
-
-    if ($needle !== '' && $existing !== '' && $percent >= 78) {
-      $r['distance_m'] = (int) round($d);
-      $r['text_similarity'] = round($percent, 2);
-      return $r;
+    $distanceM = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
+    if ($distanceM > $distanceThresholdMeters) {
+      continue;
     }
+
+    $baseTime = (string)($r['date_incident_from'] ?: $r['created_at']);
+    $timeDiffSec = abs(strtotime((string)$dateIncidentFromSql) - strtotime($baseTime));
+    if ($timeDiffSec > $timeThresholdSeconds) {
+      continue;
+    }
+
+    $existingNarrative = normalize_narrative_for_match((string)$r['narrative']);
+    $similarity = null;
+
+    if ($needle !== '' && $existingNarrative !== '') {
+      similar_text($needle, $existingNarrative, $percent);
+      $similarity = round($percent, 2);
+    }
+
+    // Primary duplicate rule = same type + near location + near time
+    // Narrative similarity is only supporting evidence, not mandatory.
+    $r['distance_m'] = (int) round($distanceM);
+    $r['time_diff_sec'] = (int) $timeDiffSec;
+    $r['text_similarity'] = $similarity;
+
+    return $r;
   }
+
   return null;
 }
 
@@ -453,7 +515,16 @@ try {
     $crimeCategory = "OTHER";
   }
 
-  $existingRecent = find_recent_same_user_incident($pdo, (int)$user["id"], $incidentType, $lat, $lng, $dateIncidentFromSql, 20);
+  $existingRecent = find_recent_same_user_incident(
+    $pdo,
+    (int)$user["id"],
+    $incidentType,
+    $lat,
+    $lng,
+    $dateIncidentFromSql,
+    20
+  );
+
   if ($existingRecent) {
     out(429, [
       "ok" => false,
@@ -462,12 +533,21 @@ try {
       "existing_report" => [
         "id" => (int)$existingRecent["id"],
         "incident_code" => $existingRecent["incident_code"],
-        "distance_m" => (int)($existingRecent["distance_m"] ?? 0)
+        "distance_m" => (int)($existingRecent["distance_m"] ?? 0),
+        "time_diff_sec" => (int)($existingRecent["time_diff_sec"] ?? 0)
       ]
     ]);
   }
 
-  $duplicateOf = find_duplicate_incident($pdo, (int)$user["id"], $incidentType, $narrative, $lat, $lng, $dateIncidentFromSql);
+  $duplicateOf = find_duplicate_incident(
+    $pdo,
+    (int)$user["id"],
+    $incidentType,
+    $narrative,
+    $lat,
+    $lng,
+    $dateIncidentFromSql
+  );
 
   $riskStatus = $clientRiskStatus === "RISK" ? "RISK" : "SAFE";
   $riskDistanceM = $clientRiskDistanceM;
@@ -519,7 +599,11 @@ try {
   }
 
   $severityScore = compute_severity_score($crimeCategory, 0, 0, 0, $riskStatus, $isHotspotRelated);
-  $verificationStatus = $duplicateOf ? 'DUPLICATE' : 'PENDING';
+
+  // Keep as PENDING during submission.
+  // Duplicate confirmation should happen during admin verification.
+  $verificationStatus = 'PENDING';
+
   $incidentCode = generate_incident_code($pdo);
 
   $pdo->beginTransaction();
@@ -628,6 +712,21 @@ try {
     $user["email"] ?? null
   ]);
 
+  $statusRemark = 'Incident reported from mobile app';
+
+  if ($duplicateOf) {
+    $statusRemark .= sprintf(
+      ' | Suspected duplicate candidate of %s (ID %d, distance %dm, time diff %ds%s)',
+      (string)$duplicateOf["incident_code"],
+      (int)$duplicateOf["id"],
+      (int)($duplicateOf["distance_m"] ?? 0),
+      (int)($duplicateOf["time_diff_sec"] ?? 0),
+      $duplicateOf["text_similarity"] !== null
+        ? ', similarity ' . number_format((float)$duplicateOf["text_similarity"], 2) . '%'
+        : ''
+    );
+  }
+
   $statusStmt = $pdo->prepare("
     INSERT INTO incident_status_history (
       incident_id,
@@ -648,9 +747,7 @@ try {
   $statusStmt->execute([
     $incidentId,
     $verificationStatus,
-    $duplicateOf
-      ? 'Incident reported from mobile app and auto-flagged as DUPLICATE candidate'
-      : 'Incident reported from mobile app',
+    $statusRemark,
     (int)$user["id"]
   ]);
 
@@ -790,13 +887,21 @@ try {
     ],
     "severity_score" => $severityScore,
     "duplicate_flag" => $duplicateOf ? [
-      "is_duplicate" => true,
+      "is_duplicate_candidate" => true,
       "matched_incident_id" => (int)$duplicateOf["id"],
       "matched_incident_code" => $duplicateOf["incident_code"],
       "distance_m" => (int)($duplicateOf["distance_m"] ?? 0),
-      "text_similarity" => (float)($duplicateOf["text_similarity"] ?? 0)
+      "time_diff_sec" => (int)($duplicateOf["time_diff_sec"] ?? 0),
+      "text_similarity" => $duplicateOf["text_similarity"] !== null
+        ? (float)$duplicateOf["text_similarity"]
+        : null,
+      "rule_basis" => [
+        "same_incident_type" => true,
+        "distance_threshold_m" => 200,
+        "time_threshold_sec" => 7200
+      ]
     ] : [
-      "is_duplicate" => false
+      "is_duplicate_candidate" => false
     ]
   ]);
 
