@@ -68,8 +68,29 @@ try {
     out(403, ["ok" => false, "message" => "Access denied"]);
   }
 
+  $search = trim((string)($_GET["search"] ?? ""));
+  $status = strtoupper(trim((string)($_GET["status"] ?? "")));
+
+  $allowedStatus = [
+    "",
+    "ALL",
+    "PENDING",
+    "ACTIVE",
+    "DISABLED",
+    "INCOMPLETE",
+    "VERIFIED",
+    "REJECTED",
+    "RESUBMISSION_REQUIRED",
+    "FLAGGED",
+    "SUSPENDED"
+  ];
+  if (!in_array($status, $allowedStatus, true)) {
+    $status = "";
+  }
+
   if ($role === "super_admin") {
-    $stmt = $pdo->query("
+    $params = [];
+    $sql = "
       SELECT
         u.id,
         u.firstname,
@@ -77,6 +98,13 @@ try {
         u.email,
         u.username,
         u.account_status,
+        u.account_flag_status,
+        u.false_report_count,
+        u.false_alarm_count,
+        u.flagged_reason,
+        u.flagged_at,
+        u.suspended_at,
+        u.suspension_reason,
         u.is_email_verified,
         up.mobile_number,
         up.city_municipality,
@@ -86,7 +114,43 @@ try {
       FROM users u
       LEFT JOIN user_profiles up ON up.user_id = u.id
       WHERE LOWER(u.role) = 'citizen'
+    ";
+
+    if ($status !== "" && $status !== "ALL") {
+      if ($status === "FLAGGED") {
+        $sql .= " AND LOWER(COALESCE(u.account_flag_status, 'none')) = 'flagged' ";
+      } elseif ($status === "SUSPENDED") {
+        $sql .= " AND LOWER(COALESCE(u.account_flag_status, 'none')) = 'suspended' ";
+      } else {
+        $sql .= " AND LOWER(COALESCE(u.account_status, 'pending')) = ? ";
+        $params[] = strtolower($status);
+      }
+    }
+
+    if ($search !== "") {
+      $sql .= "
+        AND (
+          LOWER(COALESCE(u.firstname, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(u.lastname, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(u.email, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(u.username, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(up.barangay, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(up.city_municipality, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(up.province, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(u.account_flag_status, 'none')) LIKE LOWER(?)
+        )
+      ";
+      $like = "%" . $search . "%";
+      array_push($params, $like, $like, $like, $like, $like, $like, $like, $like);
+    }
+
+    $sql .= "
       ORDER BY
+        CASE LOWER(COALESCE(u.account_flag_status, 'none'))
+          WHEN 'suspended' THEN 1
+          WHEN 'flagged' THEN 2
+          ELSE 3
+        END,
         CASE LOWER(COALESCE(u.account_status, 'pending'))
           WHEN 'pending' THEN 1
           WHEN 'resubmission_required' THEN 2
@@ -94,13 +158,16 @@ try {
           WHEN 'rejected' THEN 4
           WHEN 'verified' THEN 5
           WHEN 'active' THEN 6
-          ELSE 7
+          WHEN 'disabled' THEN 7
+          ELSE 8
         END,
         COALESCE(up.updated_at, u.updated_at) DESC,
         u.lastname ASC,
         u.firstname ASC
-    ");
+    ";
 
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
     $reqStmt = $pdo->prepare("
@@ -155,6 +222,13 @@ try {
           "email" => $r["email"],
           "username" => $r["username"],
           "account_status" => strtolower((string)($r["account_status"] ?: "pending")),
+          "account_flag_status" => strtolower((string)($r["account_flag_status"] ?: "none")),
+          "false_report_count" => (int)($r["false_report_count"] ?? 0),
+          "false_alarm_count" => (int)($r["false_alarm_count"] ?? 0),
+          "flagged_reason" => $r["flagged_reason"] ?? null,
+          "flagged_at" => $r["flagged_at"] ?? null,
+          "suspended_at" => $r["suspended_at"] ?? null,
+          "suspension_reason" => $r["suspension_reason"] ?? null,
           "is_email_verified" => (int)($r["is_email_verified"] ?? 0),
           "mobile_number" => $r["mobile_number"],
           "city_municipality" => $r["city_municipality"],
@@ -197,9 +271,6 @@ try {
     ]);
   }
 
-  $search = trim((string)($_GET["search"] ?? ""));
-  $status = strtolower(trim((string)($_GET["status"] ?? "")));
-
   $params = [$scopeProvince, $scopeCity];
 
   $sql = "
@@ -210,6 +281,13 @@ try {
       u.email,
       u.username,
       u.account_status,
+      u.account_flag_status,
+      u.false_report_count,
+      u.false_alarm_count,
+      u.flagged_reason,
+      u.flagged_at,
+      u.suspended_at,
+      u.suspension_reason,
       u.is_email_verified,
       up.mobile_number,
       up.city_municipality,
@@ -223,17 +301,15 @@ try {
       AND LOWER(COALESCE(up.city_municipality, '')) = LOWER(?)
   ";
 
-  if ($status !== "" && in_array($status, [
-    "pending",
-    "active",
-    "disabled",
-    "incomplete",
-    "verified",
-    "rejected",
-    "resubmission_required"
-  ], true)) {
-    $sql .= " AND LOWER(COALESCE(u.account_status, 'pending')) = ? ";
-    $params[] = $status;
+  if ($status !== "" && $status !== "ALL") {
+    if ($status === "FLAGGED") {
+      $sql .= " AND LOWER(COALESCE(u.account_flag_status, 'none')) = 'flagged' ";
+    } elseif ($status === "SUSPENDED") {
+      $sql .= " AND LOWER(COALESCE(u.account_flag_status, 'none')) = 'suspended' ";
+    } else {
+      $sql .= " AND LOWER(COALESCE(u.account_status, 'pending')) = ? ";
+      $params[] = strtolower($status);
+    }
   }
 
   if ($search !== "") {
@@ -244,14 +320,22 @@ try {
         OR LOWER(COALESCE(u.email, '')) LIKE LOWER(?)
         OR LOWER(COALESCE(u.username, '')) LIKE LOWER(?)
         OR LOWER(COALESCE(up.barangay, '')) LIKE LOWER(?)
+        OR LOWER(COALESCE(up.city_municipality, '')) LIKE LOWER(?)
+        OR LOWER(COALESCE(up.province, '')) LIKE LOWER(?)
+        OR LOWER(COALESCE(u.account_flag_status, 'none')) LIKE LOWER(?)
       )
     ";
     $like = "%" . $search . "%";
-    array_push($params, $like, $like, $like, $like, $like);
+    array_push($params, $like, $like, $like, $like, $like, $like, $like, $like);
   }
 
   $sql .= "
     ORDER BY
+      CASE LOWER(COALESCE(u.account_flag_status, 'none'))
+        WHEN 'suspended' THEN 1
+        WHEN 'flagged' THEN 2
+        ELSE 3
+      END,
       CASE LOWER(COALESCE(u.account_status, 'pending'))
         WHEN 'pending' THEN 1
         WHEN 'resubmission_required' THEN 2
@@ -259,7 +343,8 @@ try {
         WHEN 'rejected' THEN 4
         WHEN 'verified' THEN 5
         WHEN 'active' THEN 6
-        ELSE 7
+        WHEN 'disabled' THEN 7
+        ELSE 8
       END,
       COALESCE(up.updated_at, u.updated_at) DESC,
       u.lastname ASC,
@@ -287,20 +372,22 @@ try {
     FROM user_verification_requirements r
     WHERE r.active = 1
       AND (
-        (r.station_id IS NULL AND r.city_municipality IS NULL AND r.province IS NULL)
+        (r.station_id IS NULL AND r.province IS NULL AND r.city_municipality IS NULL)
         OR (
           r.station_id IS NULL
           AND LOWER(COALESCE(r.province, '')) = LOWER(?)
           AND LOWER(COALESCE(r.city_municipality, '')) = LOWER(?)
         )
-        OR r.station_id = ?
+        OR (
+          r.station_id = ?
+        )
       )
     ORDER BY r.is_system DESC, r.requirement_name ASC
   ");
   $reqStmt->execute([
     $scopeProvince,
     $scopeCity,
-    (int)$station["id"],
+    (int)$station["id"]
   ]);
   $requirements = $reqStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
@@ -337,6 +424,13 @@ try {
         "email" => $r["email"],
         "username" => $r["username"],
         "account_status" => strtolower((string)($r["account_status"] ?: "pending")),
+        "account_flag_status" => strtolower((string)($r["account_flag_status"] ?: "none")),
+        "false_report_count" => (int)($r["false_report_count"] ?? 0),
+        "false_alarm_count" => (int)($r["false_alarm_count"] ?? 0),
+        "flagged_reason" => $r["flagged_reason"] ?? null,
+        "flagged_at" => $r["flagged_at"] ?? null,
+        "suspended_at" => $r["suspended_at"] ?? null,
+        "suspension_reason" => $r["suspension_reason"] ?? null,
         "is_email_verified" => (int)($r["is_email_verified"] ?? 0),
         "mobile_number" => $r["mobile_number"],
         "city_municipality" => $r["city_municipality"],
