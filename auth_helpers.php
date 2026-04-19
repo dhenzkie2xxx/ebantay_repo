@@ -45,6 +45,12 @@ function auth_get_user_by_token(PDO $pdo, string $token): ?array {
       u.station_id,
       u.account_status,
       u.account_flag_status,
+      u.false_report_count,
+      u.false_alarm_count,
+      u.flagged_reason,
+      u.flagged_at,
+      u.suspended_at,
+      u.suspension_reason,
       u.approved_by,
       u.approved_at,
       u.rejected_reason,
@@ -101,9 +107,7 @@ function auth_admin_station_gate(array $user): ?array {
       "payload" => [
         "ok" => false,
         "code" => "ACCOUNT_DISABLED",
-        "message" => $role === "police_on_field"
-          ? "Your police on field account is disabled."
-          : "Your admin account is disabled."
+        "message" => $role === "police_on_field" ? "Your police on field account is disabled." : "Your admin account is disabled."
       ]
     ];
   }
@@ -114,9 +118,7 @@ function auth_admin_station_gate(array $user): ?array {
       "payload" => [
         "ok" => false,
         "code" => "ACCOUNT_SUSPENDED",
-        "message" => $role === "police_on_field"
-          ? "Your police on field account is suspended."
-          : "Your admin account is suspended."
+        "message" => $role === "police_on_field" ? "Your police on field account is suspended." : "Your admin account is suspended."
       ]
     ];
   }
