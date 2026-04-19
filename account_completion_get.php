@@ -15,14 +15,69 @@ function normalize_scope_value($value): ?string {
   return $value === "" ? null : $value;
 }
 
-function get_bearer_or_query_token(): string {
-  $token = bearer_token();
-  if ($token !== "") return $token;
+function get_user_profile(PDO $pdo, int $userId): ?array {
+  $stmt = $pdo->prepare("
+    SELECT
+      user_id,
+      mobile_number,
+      address_text,
+      address_lat,
+      address_lng,
+      barangay,
+      city_municipality,
+      province,
+      region
+    FROM user_profiles
+    WHERE user_id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$userId]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-  $queryToken = trim((string)($_GET["token"] ?? ""));
-  if ($queryToken !== "") return $queryToken;
+  return $row ?: null;
+}
 
-  return "";
+function requirement_applies_to_user(PDO $pdo, array $requirement, array $profile): bool {
+  $reqStationId = $requirement["station_id"] !== null ? (int)$requirement["station_id"] : null;
+  $reqProvince = normalize_scope_value($requirement["province"] ?? null);
+  $reqCity = normalize_scope_value($requirement["city_municipality"] ?? null);
+
+  $userProvince = normalize_scope_value($profile["province"] ?? null);
+  $userCity = normalize_scope_value($profile["city_municipality"] ?? null);
+
+  if ($reqStationId === null && $reqProvince === null && $reqCity === null) {
+    return true;
+  }
+
+  if ($reqStationId === null) {
+    if (!$userProvince || !$userCity || !$reqProvince || !$reqCity) return false;
+
+    return
+      strcasecmp($userProvince, $reqProvince) === 0 &&
+      strcasecmp($userCity, $reqCity) === 0;
+  }
+
+  $stmt = $pdo->prepare("
+    SELECT
+      province,
+      city_municipality
+    FROM police_stations
+    WHERE id = ?
+    LIMIT 1
+  ");
+  $stmt->execute([$reqStationId]);
+  $station = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$station) return false;
+
+  $stationProvince = normalize_scope_value($station["province"] ?? null);
+  $stationCity = normalize_scope_value($station["city_municipality"] ?? null);
+
+  if (!$userProvince || !$userCity || !$stationProvince || !$stationCity) return false;
+
+  return
+    strcasecmp($userProvince, $stationProvince) === 0 &&
+    strcasecmp($userCity, $stationCity) === 0;
 }
 
 try {
@@ -30,204 +85,125 @@ try {
     out(405, ["ok" => false, "message" => "Method not allowed"]);
   }
 
-  $token = get_bearer_or_query_token();
-  if ($token === "") {
-    out(401, ["ok" => false, "message" => "Missing token"]);
-  }
-
-  $user = auth_get_user_by_token($pdo, $token);
-  if (!$user) {
-    out(401, ["ok" => false, "message" => "Unauthorized"]);
-  }
-
-  if (auth_check_token_expired($user)) {
-    out(401, ["ok" => false, "message" => "Token expired"]);
-  }
+  $user = auth_require_login($pdo);
 
   if (strtolower((string)($user["role"] ?? "")) !== "citizen") {
-    out(403, ["ok" => false, "message" => "Only citizen users can access this endpoint"]);
+    out(403, ["ok" => false, "message" => "Only citizen users can access account completion"]);
   }
 
   $userId = (int)$user["id"];
+  $profile = get_user_profile($pdo, $userId);
 
-  // -------------------------------------------------------
-  // user + profile
-  // -------------------------------------------------------
-  $stmt = $pdo->prepare("
+  $safeProfile = [
+    "mobile_number" => $profile["mobile_number"] ?? null,
+    "address_text" => $profile["address_text"] ?? null,
+    "address_lat" => isset($profile["address_lat"]) && $profile["address_lat"] !== null ? (float)$profile["address_lat"] : null,
+    "address_lng" => isset($profile["address_lng"]) && $profile["address_lng"] !== null ? (float)$profile["address_lng"] : null,
+    "barangay" => $profile["barangay"] ?? null,
+    "city_municipality" => $profile["city_municipality"] ?? null,
+    "province" => $profile["province"] ?? null,
+    "region" => $profile["region"] ?? null,
+  ];
+
+  $requirementsStmt = $pdo->query("
     SELECT
-      u.id,
-      u.firstname,
-      u.lastname,
-      u.email,
-      u.username,
-      u.role,
-      u.valid,
-      u.account_status,
-      u.is_email_verified,
-      u.approved_by,
-      u.approved_at,
-      u.rejected_reason,
-      u.created_at,
-      u.updated_at,
-
-      up.mobile_number,
-      up.address_text,
-      up.address_lat,
-      up.address_lng,
-      up.barangay,
-      up.city_municipality,
-      up.province,
-      up.region,
-      up.created_at AS profile_created_at,
-      up.updated_at AS profile_updated_at
-
-    FROM users u
-    LEFT JOIN user_profiles up ON up.user_id = u.id
-    WHERE u.id = ?
-    LIMIT 1
+      id,
+      requirement_code,
+      requirement_name,
+      is_required,
+      is_system,
+      station_id,
+      city_municipality,
+      province,
+      active
+    FROM user_verification_requirements
+    WHERE active = 1
+    ORDER BY is_system DESC, requirement_name ASC
   ");
-  $stmt->execute([$userId]);
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+  $allRequirements = $requirementsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-  if (!$row) {
-    out(404, ["ok" => false, "message" => "User not found"]);
-  }
-
-  $profileProvince = normalize_scope_value($row["province"] ?? null);
-  $profileCity = normalize_scope_value($row["city_municipality"] ?? null);
-
-  // -------------------------------------------------------
-  // Active requirements for this user scope
-  // Includes:
-  // - global system requirements
-  // - province/city scoped requirements
-  // - station-scoped requirements through stations in same province/city
-  // -------------------------------------------------------
-  $requirementsSql = "
-    SELECT DISTINCT
-      r.id,
-      r.requirement_code AS code,
-      r.requirement_name AS name,
-      r.is_required,
-      r.is_system,
-      r.station_id,
-      r.city_municipality,
-      r.province,
-      r.active,
-      r.created_by,
-      r.created_at,
-      r.updated_at
-    FROM user_verification_requirements r
-    LEFT JOIN police_stations ps
-      ON ps.id = r.station_id
-    WHERE r.active = 1
-      AND (
-        (
-          r.station_id IS NULL
-          AND r.city_municipality IS NULL
-          AND r.province IS NULL
-        )
-  ";
-
-  $params = [];
-
-  if ($profileProvince && $profileCity) {
-    $requirementsSql .= "
-        OR (
-          r.station_id IS NULL
-          AND LOWER(COALESCE(r.province, '')) = LOWER(?)
-          AND LOWER(COALESCE(r.city_municipality, '')) = LOWER(?)
-        )
-        OR (
-          r.station_id IS NOT NULL
-          AND LOWER(COALESCE(ps.province, '')) = LOWER(?)
-          AND LOWER(COALESCE(ps.city_municipality, '')) = LOWER(?)
-        )
-    ";
-    array_push($params, $profileProvince, $profileCity, $profileProvince, $profileCity);
-  }
-
-  $requirementsSql .= "
-      )
-    ORDER BY r.is_system DESC, r.requirement_name ASC
-  ";
-
-  $reqStmt = $pdo->prepare($requirementsSql);
-  $reqStmt->execute($params);
-  $requirements = $reqStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-  // -------------------------------------------------------
-  // User submissions
-  // latest per requirement
-  // -------------------------------------------------------
-  $subStmt = $pdo->prepare("
-    SELECT
-      s.id,
-      s.user_id,
-      s.requirement_id,
-      s.file_name,
-      s.mime_type,
-      s.file_size,
-      s.status,
-      s.remarks,
-      s.uploaded_at,
-      s.reviewed_at,
-      s.reviewed_by,
-      r.requirement_code,
-      r.requirement_name
-    FROM user_requirement_submissions s
-    INNER JOIN user_verification_requirements r
-      ON r.id = s.requirement_id
-    WHERE s.user_id = ?
-    ORDER BY s.requirement_id ASC, s.uploaded_at DESC, s.id DESC
-  ");
-  $subStmt->execute([$userId]);
-  $submissionsRaw = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-  $latestByRequirement = [];
-  foreach ($submissionsRaw as $s) {
-    $reqId = (int)$s["requirement_id"];
-    if (!isset($latestByRequirement[$reqId])) {
-      $latestByRequirement[$reqId] = $s;
+  $applicableRequirements = [];
+  foreach ($allRequirements as $req) {
+    if ($profile && requirement_applies_to_user($pdo, $req, $profile)) {
+      $applicableRequirements[] = $req;
+    } elseif (!$profile && (int)($req["is_system"] ?? 0) === 1) {
+      $applicableRequirements[] = $req;
     }
   }
 
-  $baseUrl = "";
-  $scheme = (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] !== "off") ? "https" : "http";
-  $host = $_SERVER["HTTP_HOST"] ?? "";
-  if ($host !== "") {
-    $baseUrl = $scheme . "://" . $host;
+  $submissionRows = [];
+  if ($userId > 0) {
+    $subStmt = $pdo->prepare("
+      SELECT
+        s.id,
+        s.user_id,
+        s.requirement_id,
+        s.file_name,
+        s.mime_type,
+        s.file_size,
+        s.status,
+        s.remarks,
+        s.uploaded_at,
+        s.reviewed_at,
+        s.reviewed_by
+      FROM user_requirement_submissions s
+      WHERE s.user_id = ?
+      ORDER BY s.requirement_id ASC, s.uploaded_at DESC, s.id DESC
+    ");
+    $subStmt->execute([$userId]);
+    $submissionRows = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
   }
 
+  $latestSubmissionByRequirement = [];
+  foreach ($submissionRows as $s) {
+    $reqId = (int)$s["requirement_id"];
+    if (!isset($latestSubmissionByRequirement[$reqId])) {
+      $latestSubmissionByRequirement[$reqId] = $s;
+    }
+  }
+
+  $token = bearer_token();
+  $scheme = (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] !== "off") ? "https" : "http";
+  $host = $_SERVER["HTTP_HOST"] ?? "";
+  $baseUrl = $host !== "" ? $scheme . "://" . $host : "";
   $tokenParam = rawurlencode($token);
 
-  $submissions = [];
-  foreach ($latestByRequirement as $reqId => $s) {
-    $docId = (int)$s["id"];
-    $path = "/get_user_document.php?id=" . $docId . "&token=" . $tokenParam;
+  $requirements = [];
+  foreach ($applicableRequirements as $req) {
+    $reqId = (int)$req["id"];
+    $latest = $latestSubmissionByRequirement[$reqId] ?? null;
 
-    $submissions[] = [
-      "id" => $docId,
-      "user_id" => (int)$s["user_id"],
-      "requirement_id" => (int)$s["requirement_id"],
-      "requirement_code" => $s["requirement_code"],
-      "requirement_name" => $s["requirement_name"],
-      "file_name" => $s["file_name"],
-      "mime_type" => $s["mime_type"],
-      "file_size" => $s["file_size"] !== null ? (int)$s["file_size"] : null,
-      "status" => strtolower((string)($s["status"] ?? "submitted")),
-      "remarks" => $s["remarks"],
-      "uploaded_at" => $s["uploaded_at"],
-      "reviewed_at" => $s["reviewed_at"],
-      "reviewed_by" => $s["reviewed_by"] !== null ? (int)$s["reviewed_by"] : null,
-      "preview_url" => $baseUrl . $path . "&mode=preview",
-      "download_url" => $baseUrl . $path . "&mode=download"
+    $submissionPayload = null;
+    if ($latest) {
+      $docPath = "/get_user_document.php?id=" . (int)$latest["id"] . "&token=" . $tokenParam;
+
+      $submissionPayload = [
+        "id" => (int)$latest["id"],
+        "user_id" => (int)$latest["user_id"],
+        "requirement_id" => (int)$latest["requirement_id"],
+        "file_name" => $latest["file_name"] ?? null,
+        "mime_type" => $latest["mime_type"] ?? null,
+        "file_size" => isset($latest["file_size"]) && $latest["file_size"] !== null ? (int)$latest["file_size"] : null,
+        "status" => strtoupper((string)($latest["status"] ?? "submitted")),
+        "remarks" => $latest["remarks"] ?? null,
+        "uploaded_at" => $latest["uploaded_at"] ?? null,
+        "reviewed_at" => $latest["reviewed_at"] ?? null,
+        "reviewed_by" => isset($latest["reviewed_by"]) && $latest["reviewed_by"] !== null ? (int)$latest["reviewed_by"] : null,
+        "preview_url" => $baseUrl . $docPath . "&mode=preview",
+        "download_url" => $baseUrl . $docPath . "&mode=download",
+      ];
+    }
+
+    $requirements[] = [
+      "id" => $reqId,
+      "code" => $req["requirement_code"],
+      "name" => $req["requirement_name"],
+      "is_required" => (int)$req["is_required"] === 1,
+      "is_system" => (int)$req["is_system"] === 1,
+      "submission" => $submissionPayload,
     ];
   }
 
-  // -------------------------------------------------------
-  // latest verification request
-  // -------------------------------------------------------
   $vrStmt = $pdo->prepare("
     SELECT
       id,
@@ -243,106 +219,34 @@ try {
     LIMIT 1
   ");
   $vrStmt->execute([$userId]);
-  $verificationRequest = $vrStmt->fetch(PDO::FETCH_ASSOC);
-
-  // -------------------------------------------------------
-  // build requirement items with submission status
-  // -------------------------------------------------------
-  $submissionByRequirementId = [];
-  foreach ($submissions as $s) {
-    $submissionByRequirementId[(int)$s["requirement_id"]] = $s;
-  }
-
-  $requirementItems = array_map(function ($r) use ($submissionByRequirementId) {
-    $reqId = (int)$r["id"];
-    $submission = $submissionByRequirementId[$reqId] ?? null;
-
-    return [
-      "id" => $reqId,
-      "code" => $r["code"],
-      "name" => $r["name"],
-      "is_required" => (int)$r["is_required"] === 1,
-      "is_system" => (int)$r["is_system"] === 1,
-      "station_id" => $r["station_id"] !== null ? (int)$r["station_id"] : null,
-      "city_municipality" => $r["city_municipality"],
-      "province" => $r["province"],
-      "active" => (int)$r["active"] === 1,
-      "submission" => $submission ? [
-        "id" => (int)$submission["id"],
-        "file_name" => $submission["file_name"],
-        "mime_type" => $submission["mime_type"],
-        "file_size" => $submission["file_size"],
-        "status" => $submission["status"],
-        "remarks" => $submission["remarks"],
-        "uploaded_at" => $submission["uploaded_at"],
-        "reviewed_at" => $submission["reviewed_at"],
-        "preview_url" => $submission["preview_url"],
-        "download_url" => $submission["download_url"]
-      ] : null
-    ];
-  }, $requirements);
-
-  // -------------------------------------------------------
-  // completion counters
-  // -------------------------------------------------------
-  $requiredCount = 0;
-  $submittedRequiredCount = 0;
-
-  foreach ($requirementItems as $item) {
-    if (!empty($item["is_required"])) {
-      $requiredCount++;
-      if (!empty($item["submission"])) {
-        $submittedRequiredCount++;
-      }
-    }
-  }
+  $verificationRequest = $vrStmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
   out(200, [
     "ok" => true,
     "user" => [
-      "id" => (int)$row["id"],
-      "firstname" => $row["firstname"],
-      "lastname" => $row["lastname"],
-      "email" => $row["email"],
-      "username" => $row["username"],
-      "role" => $row["role"],
-      "valid" => $row["valid"],
-      "account_status" => strtolower((string)($row["account_status"] ?? "pending")),
-      "is_email_verified" => (int)($row["is_email_verified"] ?? 0),
-      "approved_by" => $row["approved_by"] !== null ? (int)$row["approved_by"] : null,
-      "approved_at" => $row["approved_at"],
-      "rejected_reason" => $row["rejected_reason"],
-      "created_at" => $row["created_at"],
-      "updated_at" => $row["updated_at"]
+      "id" => (int)$user["id"],
+      "firstname" => $user["firstname"] ?? "",
+      "lastname" => $user["lastname"] ?? "",
+      "email" => $user["email"] ?? "",
+      "username" => $user["username"] ?? "",
+      "role" => $user["role"] ?? "citizen",
+      "valid" => $user["valid"] ?? null,
+      "account_status" => $user["account_status"] ?? "pending",
+      "rejected_reason" => $user["rejected_reason"] ?? null,
+      "is_email_verified" => (int)($user["is_email_verified"] ?? 0),
+
+      // account safety fields
+      "false_report_count" => (int)($user["false_report_count"] ?? 0),
+      "false_alarm_count" => (int)($user["false_alarm_count"] ?? 0),
+      "account_flag_status" => $user["account_flag_status"] ?? "none",
+      "flagged_reason" => $user["flagged_reason"] ?? null,
+      "flagged_at" => $user["flagged_at"] ?? null,
+      "suspended_at" => $user["suspended_at"] ?? null,
+      "suspension_reason" => $user["suspension_reason"] ?? null,
     ],
-    "profile" => [
-      "mobile_number" => $row["mobile_number"],
-      "address_text" => $row["address_text"],
-      "address_lat" => $row["address_lat"] !== null ? (float)$row["address_lat"] : null,
-      "address_lng" => $row["address_lng"] !== null ? (float)$row["address_lng"] : null,
-      "barangay" => $row["barangay"],
-      "city_municipality" => $row["city_municipality"],
-      "province" => $row["province"],
-      "region" => $row["region"],
-      "profile_created_at" => $row["profile_created_at"],
-      "profile_updated_at" => $row["profile_updated_at"]
-    ],
-    "requirements" => $requirementItems,
-    "submissions" => $submissions,
-    "verification_request" => $verificationRequest ? [
-      "id" => (int)$verificationRequest["id"],
-      "user_id" => (int)$verificationRequest["user_id"],
-      "status" => strtolower((string)($verificationRequest["status"] ?? "pending")),
-      "submitted_at" => $verificationRequest["submitted_at"],
-      "reviewed_at" => $verificationRequest["reviewed_at"],
-      "reviewed_by" => $verificationRequest["reviewed_by"] !== null ? (int)$verificationRequest["reviewed_by"] : null,
-      "remarks" => $verificationRequest["remarks"]
-    ] : null,
-    "completion" => [
-      "required_total" => $requiredCount,
-      "required_submitted" => $submittedRequiredCount,
-      "is_ready_for_submission" => $requiredCount > 0 && $requiredCount === $submittedRequiredCount
-    ]
+    "profile" => $safeProfile,
+    "requirements" => $requirements,
+    "verification_request" => $verificationRequest,
   ]);
 
 } catch (Throwable $e) {
