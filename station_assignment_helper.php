@@ -1,7 +1,8 @@
 <?php
 
 function haversine_distance($lat1, $lon1, $lat2, $lon2) {
-  $R = 6371000;
+  $R = 6371000; // meters
+
   $dLat = deg2rad($lat2 - $lat1);
   $dLon = deg2rad($lon2 - $lon1);
 
@@ -13,6 +14,9 @@ function haversine_distance($lat1, $lon1, $lat2, $lon2) {
   return $R * $c;
 }
 
+/**
+ * Find nearest station within same province
+ */
 function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
   if (!$province) return null;
 
@@ -46,6 +50,9 @@ function find_nearest_station_in_province(PDO $pdo, float $lat, float $lng, ?str
   return $nearest;
 }
 
+/**
+ * Find nearest station within same city + province
+ */
 function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string $province, ?string $city): ?array {
   if (!$province || !$city) return null;
 
@@ -80,6 +87,9 @@ function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string 
   return $nearest;
 }
 
+/**
+ * Panic button assignment (province-based)
+ */
 function assign_panic_station(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
   $provinceMatch = find_nearest_station_in_province($pdo, $lat, $lng, $province);
 
@@ -91,13 +101,18 @@ function assign_panic_station(PDO $pdo, float $lat, float $lng, ?string $provinc
   return null;
 }
 
+/**
+ * Incident assignment logic
+ */
 function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $province, ?string $city): ?array {
+  // Priority 1: Strict city match
   $cityMatch = find_nearest_station_in_city($pdo, $lat, $lng, $province, $city);
   if ($cityMatch) {
     $cityMatch["_assignment_rule"] = "CITY_STRICT";
     return $cityMatch;
   }
 
+  // Fallback: province match
   $provinceMatch = find_nearest_station_in_province($pdo, $lat, $lng, $province);
   if ($provinceMatch) {
     $provinceMatch["_assignment_rule"] = "PROVINCE_FALLBACK";
@@ -107,7 +122,11 @@ function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $prov
   return null;
 }
 
+/**
+ * Find nearest police_on_field (real-time responder)
+ */
 function find_nearest_police_on_field(PDO $pdo, float $lat, float $lng, ?string $province = null): ?array {
+
   $sql = "
     SELECT
       u.id,
@@ -146,6 +165,7 @@ function find_nearest_police_on_field(PDO $pdo, float $lat, float $lng, ?string 
   ";
 
   $params = [];
+
   if ($province) {
     $sql .= " AND LOWER(TRIM(ps.province)) = LOWER(TRIM(?)) ";
     $params[] = $province;
@@ -157,14 +177,19 @@ function find_nearest_police_on_field(PDO $pdo, float $lat, float $lng, ?string 
 
   $nearest = null;
   $nearestDist = null;
+
   foreach ($rows as $r) {
-    if (!isset($r['lat'], $r['lng']) || !is_numeric($r['lat']) || !is_numeric($r['lng'])) continue;
+    if (!isset($r['lat'], $r['lng'])) continue;
+    if (!is_numeric($r['lat']) || !is_numeric($r['lng'])) continue;
+
     $d = haversine_distance($lat, $lng, (float)$r['lat'], (float)$r['lng']);
+
     if ($nearestDist === null || $d < $nearestDist) {
       $nearestDist = $d;
       $nearest = $r;
       $nearest['distance_m'] = (int) round($d);
     }
   }
+
   return $nearest;
 }

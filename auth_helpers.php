@@ -44,6 +44,7 @@ function auth_get_user_by_token(PDO $pdo, string $token): ?array {
       u.api_token_expires,
       u.station_id,
       u.account_status,
+      u.account_flag_status,
       u.approved_by,
       u.approved_at,
       u.rejected_reason,
@@ -100,7 +101,22 @@ function auth_admin_station_gate(array $user): ?array {
       "payload" => [
         "ok" => false,
         "code" => "ACCOUNT_DISABLED",
-        "message" => $role === "police_on_field" ? "Your police on field account is disabled." : "Your admin account is disabled."
+        "message" => $role === "police_on_field"
+          ? "Your police on field account is disabled."
+          : "Your admin account is disabled."
+      ]
+    ];
+  }
+
+  if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+    return [
+      "code" => 403,
+      "payload" => [
+        "ok" => false,
+        "code" => "ACCOUNT_SUSPENDED",
+        "message" => $role === "police_on_field"
+          ? "Your police on field account is suspended."
+          : "Your admin account is suspended."
       ]
     ];
   }

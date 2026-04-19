@@ -266,7 +266,17 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
-$token            = normalize_text($_POST["token"] ?? "");
+/*
+|--------------------------------------------------------------------------
+| Accept token from:
+| 1) POST token
+| 2) Authorization: Bearer <token>
+|--------------------------------------------------------------------------
+*/
+$postToken   = normalize_text($_POST["token"] ?? "");
+$headerToken = bearer_token();
+$token       = $postToken !== "" ? $postToken : $headerToken;
+
 $title            = normalize_text($_POST["title"] ?? "");
 $crimeTypeIdRaw   = $_POST["crime_type_id"] ?? null;
 $incidentTypeRaw  = normalize_text($_POST["incident_type"] ?? "");
@@ -330,7 +340,7 @@ if ($dateIncidentToSql !== null && strtotime($dateIncidentToSql) < strtotime($da
 }
 
 try {
-  $user = auth_get_user_by_token($pdo);
+  $user = auth_get_user_by_token($pdo, $token);
 
   if (!$user) {
     out(401, ["ok" => false, "message" => "Unauthorized"]);
@@ -509,7 +519,7 @@ try {
   }
 
   $severityScore = compute_severity_score($crimeCategory, 0, 0, 0, $riskStatus, $isHotspotRelated);
-
+  $verificationStatus = $duplicateOf ? 'DUPLICATE' : 'PENDING';
   $incidentCode = generate_incident_code($pdo);
 
   $pdo->beginTransaction();
@@ -588,7 +598,7 @@ try {
     $riskStatus,
     $riskDistanceM,
     $riskRadiusM,
-    $duplicateOf ? 'DUPLICATE' : 'PENDING',
+    $verificationStatus,
     $deviceTimeSql,
     $reportDelayMinutes,
     $severityScore
@@ -631,13 +641,16 @@ try {
       changed_by,
       changed_at
     ) VALUES (
-      ?, NULL, 'REPORTED', NULL, 'OPEN', NULL, 'PENDING', ?, ?, NOW()
+      ?, NULL, 'REPORTED', NULL, 'OPEN', NULL, ?, ?, ?, NOW()
     )
   ");
 
   $statusStmt->execute([
     $incidentId,
-    $duplicateOf ? 'Incident reported from mobile app and auto-flagged as DUPLICATE candidate' : 'Incident reported from mobile app',
+    $verificationStatus,
+    $duplicateOf
+      ? 'Incident reported from mobile app and auto-flagged as DUPLICATE candidate'
+      : 'Incident reported from mobile app',
     (int)$user["id"]
   ]);
 
