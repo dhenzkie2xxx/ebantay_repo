@@ -46,15 +46,6 @@ auth_out(200, [
     "email" => $user["email"],
     "username" => $user["username"],
     "role" => $user["role"],
-    "account_status" => $user["account_status"] ?? null,
-
-    // account safety / flagging fields
-    "false_report_count" => (int)($user["false_report_count"] ?? 0),
-    "false_alarm_count" => (int)($user["false_alarm_count"] ?? 0),
-    "account_flag_status" => $user["account_flag_status"] ?? "none",
-    "flagged_reason" => $user["flagged_reason"] ?? null,
-    "flagged_at" => $user["flagged_at"] ?? null,
-    "suspended_at" => $user["suspended_at"] ?? null,
-    "suspension_reason" => $user["suspension_reason"] ?? null
+    "account_status" => $user["account_status"] ?? null
   ], auth_station_scope($user))
 ]);
