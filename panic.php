@@ -123,9 +123,6 @@ function can_user_use_protected_features(array $user): bool {
   $status = strtolower(trim((string)($user["account_status"] ?? "")));
   $valid = strtolower(trim((string)($user["valid"] ?? "")));
 
-  // Backward-compatible:
-  // - old approved users may still be active + valid
-  // - new approved users are verified + valid
   if (in_array($status, ["active", "verified"], true) && $valid === "valid") {
     return true;
   }
@@ -206,11 +203,22 @@ try {
     out(403, ["ok" => false, "message" => "Email not verified"]);
   }
 
+  if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is suspended. Please contact the station admin.",
+      "account_status" => strtolower((string)($user["account_status"] ?? "")),
+      "account_flag_status" => "suspended",
+      "valid" => strtolower((string)($user["valid"] ?? ""))
+    ]);
+  }
+
   if (!can_user_use_protected_features($user)) {
     out(403, [
       "ok" => false,
       "message" => feature_block_message($user),
       "account_status" => strtolower((string)($user["account_status"] ?? "")),
+      "account_flag_status" => strtolower((string)($user["account_flag_status"] ?? "none")),
       "valid" => strtolower((string)($user["valid"] ?? ""))
     ]);
   }
@@ -251,7 +259,6 @@ try {
   $province = $canon["province"];
   $cityMunicipality = $canon["city_municipality"];
 
-  // Panic assignment is nearest station admin plus nearest police on field when available.
   $assignedStation = assign_panic_station($pdo, $lat, $lng, $province);
   $nearestPoliceOnField = function_exists("find_nearest_police_on_field")
     ? find_nearest_police_on_field($pdo, $lat, $lng, $province)

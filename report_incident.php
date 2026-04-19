@@ -266,11 +266,6 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
-/*
-|--------------------------------------------------------------------------
-| INPUTS
-|--------------------------------------------------------------------------
-*/
 $token            = normalize_text($_POST["token"] ?? "");
 $title            = normalize_text($_POST["title"] ?? "");
 $crimeTypeIdRaw   = $_POST["crime_type_id"] ?? null;
@@ -335,7 +330,7 @@ if ($dateIncidentToSql !== null && strtotime($dateIncidentToSql) < strtotime($da
 }
 
 try {
-  $user = auth_get_user_by_token($pdo, $token);
+  $user = auth_get_user_by_token($pdo);
 
   if (!$user) {
     out(401, ["ok" => false, "message" => "Unauthorized"]);
@@ -349,20 +344,26 @@ try {
     out(403, ["ok" => false, "message" => "Email not verified"]);
   }
 
+  if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is suspended. Please contact the station admin.",
+      "account_status" => strtolower((string)($user["account_status"] ?? "")),
+      "account_flag_status" => "suspended",
+      "valid" => strtolower((string)($user["valid"] ?? ""))
+    ]);
+  }
+
   if (!can_user_use_protected_features($user)) {
     out(403, [
       "ok" => false,
       "message" => feature_block_message($user),
       "account_status" => strtolower((string)($user["account_status"] ?? "")),
+      "account_flag_status" => strtolower((string)($user["account_flag_status"] ?? "none")),
       "valid" => strtolower((string)($user["valid"] ?? ""))
     ]);
   }
 
-  /*
-  |--------------------------------------------------------------------------
-  | RESOLVE SERVER-SIDE LOCATION SCOPE
-  |--------------------------------------------------------------------------
-  */
   $geo = reverse_geocode_scope($lat, $lng);
 
   $barangay = null;
@@ -408,11 +409,6 @@ try {
   $province = $canon["province"];
   $cityMunicipality = $canon["city_municipality"];
 
-  /*
-  |--------------------------------------------------------------------------
-  | RESOLVE CRIME TYPE
-  |--------------------------------------------------------------------------
-  */
   $resolvedCrimeTypeId = null;
   $incidentType = "";
   $crimeCategory = "OTHER";
@@ -447,11 +443,6 @@ try {
     $crimeCategory = "OTHER";
   }
 
-  /*
-  |--------------------------------------------------------------------------
-  | PREVENT SAME-ACCOUNT MULTIPLE INCIDENTS WITHIN 20 MINUTES
-  |--------------------------------------------------------------------------
-  */
   $existingRecent = find_recent_same_user_incident($pdo, (int)$user["id"], $incidentType, $lat, $lng, $dateIncidentFromSql, 20);
   if ($existingRecent) {
     out(429, [
@@ -466,18 +457,8 @@ try {
     ]);
   }
 
-  /*
-  |--------------------------------------------------------------------------
-  | DUPLICATE CHECK AGAINST OTHER CITIZENS
-  |--------------------------------------------------------------------------
-  */
   $duplicateOf = find_duplicate_incident($pdo, (int)$user["id"], $incidentType, $narrative, $lat, $lng, $dateIncidentFromSql);
 
-  /*
-  |--------------------------------------------------------------------------
-  | HOTSPOT CHECK
-  |--------------------------------------------------------------------------
-  */
   $riskStatus = $clientRiskStatus === "RISK" ? "RISK" : "SAFE";
   $riskDistanceM = $clientRiskDistanceM;
   $riskRadiusM = $clientRiskRadiusM > 0 ? $clientRiskRadiusM : 250;
@@ -517,20 +498,10 @@ try {
     }
   }
 
-  /*
-  |--------------------------------------------------------------------------
-  | ASSIGN INCIDENT STATION
-  |--------------------------------------------------------------------------
-  */
   $assignedStation = assign_incident_station($pdo, $lat, $lng, $province, $cityMunicipality);
   $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
   $assignmentRule = $assignedStation["_assignment_rule"] ?? null;
 
-  /*
-  |--------------------------------------------------------------------------
-  | REPORT DELAY
-  |--------------------------------------------------------------------------
-  */
   $reportDelayMinutes = null;
   if ($dateIncidentFromSql) {
     $delay = (strtotime($dateReportedSql) - strtotime($dateIncidentFromSql)) / 60;

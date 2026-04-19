@@ -109,6 +109,13 @@ try {
     out(403, ["ok" => false, "message" => "Only citizen users can upload account documents"]);
   }
 
+  if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is suspended. Please contact the station admin."
+    ]);
+  }
+
   $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
   if (in_array($currentStatus, ["verified", "active", "disabled"], true)) {
     out(403, [

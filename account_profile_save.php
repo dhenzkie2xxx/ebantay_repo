@@ -69,6 +69,13 @@ try {
     out(403, ["ok" => false, "message" => "Only citizen users can save account profile"]);
   }
 
+  if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is suspended. Please contact the station admin."
+    ]);
+  }
+
   $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
   if (in_array($currentStatus, ["verified", "active", "disabled"], true)) {
     out(403, [
@@ -127,7 +134,6 @@ try {
   $profileStmt->execute([$userId]);
   $existingProfile = $profileStmt->fetch(PDO::FETCH_ASSOC);
 
-  // once mobile is set, it is locked forever
   if ($existingProfile && trim((string)($existingProfile["mobile_number"] ?? "")) !== "") {
     $existingMobile = trim((string)$existingProfile["mobile_number"]);
     if ($existingMobile !== $mobileNumber) {
@@ -138,7 +144,6 @@ try {
     }
   }
 
-  // global uniqueness across all users
   $duplicateStmt = $pdo->prepare("
     SELECT up.user_id
     FROM user_profiles up
@@ -216,7 +221,6 @@ try {
     ]);
   }
 
-  // If previously rejected or asked for resubmission, move back to incomplete after edit
   if (in_array($currentStatus, ["rejected", "resubmission_required"], true)) {
     $statusStmt = $pdo->prepare("
       UPDATE users

@@ -48,9 +48,7 @@ function get_user_profile(PDO $pdo, int $userId): ?array {
     LIMIT 1
   ");
   $stmt->execute([$userId]);
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-  return $row ?: null;
+  return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
 function requirement_applies_to_user(PDO $pdo, array $requirement, array $profile): bool {
@@ -61,12 +59,10 @@ function requirement_applies_to_user(PDO $pdo, array $requirement, array $profil
   $userProvince = normalize_scope_value($profile["province"] ?? null);
   $userCity = normalize_scope_value($profile["city_municipality"] ?? null);
 
-  // global requirement
   if ($reqStationId === null && $reqProvince === null && $reqCity === null) {
     return true;
   }
 
-  // province/city scoped
   if ($reqStationId === null) {
     if (!$userProvince || !$userCity || !$reqProvince || !$reqCity) return false;
 
@@ -75,7 +71,6 @@ function requirement_applies_to_user(PDO $pdo, array $requirement, array $profil
       strcasecmp($userCity, $reqCity) === 0;
   }
 
-  // station scoped
   $stmt = $pdo->prepare("
     SELECT
       province,
@@ -97,6 +92,10 @@ function requirement_applies_to_user(PDO $pdo, array $requirement, array $profil
   return
     strcasecmp($userProvince, $stationProvince) === 0 &&
     strcasecmp($userCity, $stationCity) === 0;
+}
+
+function is_valid_ph_mobile(string $value): bool {
+  return preg_match('/^09\d{9}$/', $value) === 1;
 }
 
 try {
@@ -122,145 +121,127 @@ try {
     out(403, ["ok" => false, "message" => "Only citizen users can submit account completion"]);
   }
 
-  $userId = (int)$user["id"];
-
-  if ((int)($user["is_email_verified"] ?? 0) !== 1) {
-    out(403, ["ok" => false, "message" => "Please verify your email first"]);
+  if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+    out(403, [
+      "ok" => false,
+      "message" => "Your account is suspended. Please contact the station admin."
+    ]);
   }
+
+  $currentStatus = strtolower((string)($user["account_status"] ?? "pending"));
+  if (in_array($currentStatus, ["verified", "active", "disabled"], true)) {
+    out(403, ["ok" => false, "message" => "Your account is already locked or verified"]);
+  }
+
+  $userId = (int)$user["id"];
 
   $profile = get_user_profile($pdo, $userId);
   if (!$profile) {
-    out(422, [
-      "ok" => false,
-      "message" => "Please complete your account profile before submitting for verification"
-    ]);
+    out(422, ["ok" => false, "message" => "Please save your profile first"]);
   }
 
-  // Minimal profile checks
-  $mobileNumber = trim((string)($profile["mobile_number"] ?? ""));
-  $addressText = trim((string)($profile["address_text"] ?? ""));
-  $addressLat = $profile["address_lat"];
-  $addressLng = $profile["address_lng"];
-  $province = normalize_scope_value($profile["province"] ?? null);
-  $city = normalize_scope_value($profile["city_municipality"] ?? null);
+  $missing = [];
 
-  if ($mobileNumber === "" || strlen($mobileNumber) < 10) {
-    out(422, ["ok" => false, "message" => "Mobile number is required"]);
+  if (!is_valid_ph_mobile((string)($profile["mobile_number"] ?? ""))) {
+    $missing[] = ["code" => "MOBILE_NUMBER", "name" => "Valid Mobile Number"];
+  }
+  if (trim((string)($profile["address_text"] ?? "")) === "") {
+    $missing[] = ["code" => "ADDRESS_TEXT", "name" => "Address / Landmark"];
+  }
+  if (!is_numeric($profile["address_lat"] ?? null) || !is_numeric($profile["address_lng"] ?? null)) {
+    $missing[] = ["code" => "ADDRESS_PIN", "name" => "Pinned Address"];
+  }
+  if (trim((string)($profile["city_municipality"] ?? "")) === "") {
+    $missing[] = ["code" => "CITY", "name" => "City / Municipality"];
+  }
+  if (trim((string)($profile["province"] ?? "")) === "") {
+    $missing[] = ["code" => "PROVINCE", "name" => "Province"];
   }
 
-  if ($addressText === "" || $addressLat === null || $addressLng === null) {
-    out(422, ["ok" => false, "message" => "Pinned address is required"]);
-  }
-
-  if (!$province || !$city) {
-    out(422, [
-      "ok" => false,
-      "message" => "Profile province and city/municipality are required before submission"
-    ]);
-  }
-
-  // Load all active requirements for user scope
   $requirementsStmt = $pdo->query("
     SELECT
-      r.id,
-      r.requirement_code,
-      r.requirement_name,
-      r.is_required,
-      r.is_system,
-      r.station_id,
-      r.city_municipality,
-      r.province,
-      r.active
-    FROM user_verification_requirements r
-    WHERE r.active = 1
-    ORDER BY r.is_system DESC, r.requirement_name ASC
+      id,
+      requirement_code,
+      requirement_name,
+      is_required,
+      is_system,
+      station_id,
+      city_municipality,
+      province,
+      active
+    FROM user_verification_requirements
+    WHERE active = 1
+    ORDER BY is_system DESC, requirement_name ASC
   ");
-
   $allRequirements = $requirementsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-  $applicableRequirements = [];
 
+  $applicableRequirements = [];
   foreach ($allRequirements as $req) {
     if (requirement_applies_to_user($pdo, $req, $profile)) {
       $applicableRequirements[] = $req;
     }
   }
 
-  if (count($applicableRequirements) === 0) {
+  if (!empty($applicableRequirements)) {
+    $subStmt = $pdo->prepare("
+      SELECT
+        s.id,
+        s.requirement_id,
+        s.status,
+        s.uploaded_at
+      FROM user_requirement_submissions s
+      WHERE s.user_id = ?
+      ORDER BY s.requirement_id ASC, s.uploaded_at DESC, s.id DESC
+    ");
+    $subStmt->execute([$userId]);
+    $subRows = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $latestByRequirement = [];
+    foreach ($subRows as $s) {
+      $reqId = (int)$s["requirement_id"];
+      if (!isset($latestByRequirement[$reqId])) {
+        $latestByRequirement[$reqId] = $s;
+      }
+    }
+
+    foreach ($applicableRequirements as $req) {
+      if ((int)($req["is_required"] ?? 0) !== 1) {
+        continue;
+      }
+
+      $reqId = (int)$req["id"];
+      $submission = $latestByRequirement[$reqId] ?? null;
+
+      if (!$submission) {
+        $missing[] = [
+          "code" => $req["requirement_code"],
+          "name" => $req["requirement_name"],
+        ];
+        continue;
+      }
+
+      $subStatus = strtolower((string)($submission["status"] ?? ""));
+      if (!in_array($subStatus, ["submitted", "approved"], true)) {
+        $missing[] = [
+          "code" => $req["requirement_code"],
+          "name" => $req["requirement_name"],
+        ];
+      }
+    }
+  }
+
+  if (!empty($missing)) {
     out(422, [
       "ok" => false,
-      "message" => "No verification requirements are configured for your account scope yet"
-    ]);
-  }
-
-  // Load latest submissions by requirement
-  $subStmt = $pdo->prepare("
-    SELECT
-      s.id,
-      s.requirement_id,
-      s.status,
-      s.uploaded_at
-    FROM user_requirement_submissions s
-    WHERE s.user_id = ?
-    ORDER BY s.requirement_id ASC, s.uploaded_at DESC, s.id DESC
-  ");
-  $subStmt->execute([$userId]);
-  $subRows = $subStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-  $latestSubmissionByRequirement = [];
-  foreach ($subRows as $s) {
-    $reqId = (int)$s["requirement_id"];
-    if (!isset($latestSubmissionByRequirement[$reqId])) {
-      $latestSubmissionByRequirement[$reqId] = $s;
-    }
-  }
-
-  $missingRequired = [];
-  foreach ($applicableRequirements as $req) {
-    $reqId = (int)$req["id"];
-    $isRequired = (int)($req["is_required"] ?? 0) === 1;
-
-    if (!$isRequired) {
-      continue;
-    }
-
-    if (!isset($latestSubmissionByRequirement[$reqId])) {
-      $missingRequired[] = [
-        "id" => $reqId,
-        "code" => $req["requirement_code"],
-        "name" => $req["requirement_name"],
-      ];
-    }
-  }
-
-  if (!empty($missingRequired)) {
-    out(422, [
-      "ok" => false,
-      "message" => "Please upload all required documents before submitting",
-      "missing_requirements" => $missingRequired
+      "message" => "Please complete all required profile fields and upload all required documents before submitting.",
+      "missing_requirements" => $missing,
     ]);
   }
 
   $pdo->beginTransaction();
 
-  // Update main user status:
-  // keep user blocked until approved
-  $updateUserStmt = $pdo->prepare("
-    UPDATE users
-    SET
-      valid = 'unvalid',
-      account_status = 'pending',
-      rejected_reason = NULL,
-      updated_at = NOW()
-    WHERE id = ?
-    LIMIT 1
-  ");
-  $updateUserStmt->execute([$userId]);
-
-  // Update latest verification request if it's still open-ish; otherwise insert new
   $latestReqStmt = $pdo->prepare("
-    SELECT
-      id,
-      status
+    SELECT id, status
     FROM user_verification_requests
     WHERE user_id = ?
     ORDER BY id DESC
@@ -269,22 +250,8 @@ try {
   $latestReqStmt->execute([$userId]);
   $latestReq = $latestReqStmt->fetch(PDO::FETCH_ASSOC);
 
-  if ($latestReq) {
-    $latestReqId = (int)$latestReq["id"];
-
-    $updateReqStmt = $pdo->prepare("
-      UPDATE user_verification_requests
-      SET
-        status = 'pending',
-        submitted_at = NOW(),
-        reviewed_at = NULL,
-        reviewed_by = NULL,
-        remarks = NULL
-      WHERE id = ?
-    ");
-    $updateReqStmt->execute([$latestReqId]);
-
-    $verificationRequestId = $latestReqId;
+  if ($latestReq && in_array(strtolower((string)$latestReq["status"]), ["pending", "submitted"], true)) {
+    $verificationRequestId = (int)$latestReq["id"];
   } else {
     $insertReqStmt = $pdo->prepare("
       INSERT INTO user_verification_requests
@@ -292,41 +259,38 @@ try {
         user_id,
         status,
         submitted_at,
-        reviewed_at,
-        reviewed_by,
         remarks
       )
-      VALUES (?, 'pending', NOW(), NULL, NULL, NULL)
+      VALUES (?, 'pending', NOW(), NULL)
     ");
     $insertReqStmt->execute([$userId]);
-
     $verificationRequestId = (int)$pdo->lastInsertId();
   }
+
+  $userStatusStmt = $pdo->prepare("
+    UPDATE users
+    SET
+      account_status = 'pending',
+      rejected_reason = NULL,
+      updated_at = NOW()
+    WHERE id = ?
+    LIMIT 1
+  ");
+  $userStatusStmt->execute([$userId]);
 
   $pdo->commit();
 
   out(200, [
     "ok" => true,
-    "message" => "Account submitted for verification successfully",
+    "message" => "Account verification submitted successfully",
+    "verification_request" => [
+      "id" => $verificationRequestId,
+      "user_id" => $userId,
+      "status" => "pending",
+    ],
     "user" => [
       "id" => $userId,
       "account_status" => "pending",
-      "valid" => "unvalid",
-    ],
-    "verification_request" => [
-      "id" => $verificationRequestId,
-      "status" => "pending",
-      "submitted_at" => date("Y-m-d H:i:s"),
-    ],
-    "completion" => [
-      "required_total" => count(array_filter($applicableRequirements, function ($r) {
-        return (int)($r["is_required"] ?? 0) === 1;
-      })),
-      "required_submitted" => count(array_filter($applicableRequirements, function ($r) use ($latestSubmissionByRequirement) {
-        $reqId = (int)$r["id"];
-        return (int)($r["is_required"] ?? 0) === 1 && isset($latestSubmissionByRequirement[$reqId]);
-      })),
-      "is_ready_for_submission" => true
     ]
   ]);
 
