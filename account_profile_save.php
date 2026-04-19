@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -122,6 +123,20 @@ try {
   if (!$cityMunicipality || !$province) {
     out(422, ["ok" => false, "message" => "City/Municipality and Province are required"]);
   }
+
+  // Canonicalize location values so raw reverse-geocoded values like
+  // "Tangub" become the official/canonical city value like "Tangub City".
+  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+  if (!$canon["ok"]) {
+    out(422, [
+      "ok" => false,
+      "message" => $canon["message"]
+    ]);
+  }
+
+  $region = normalize_scope_value($canon["region"] ?? $region);
+  $province = normalize_scope_value($canon["province"] ?? $province);
+  $cityMunicipality = normalize_scope_value($canon["city_municipality"] ?? $cityMunicipality);
 
   $profileStmt = $pdo->prepare("
     SELECT
