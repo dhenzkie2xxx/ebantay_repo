@@ -17,10 +17,69 @@ function hotspot_normalize_scope_value($value): ?string {
   return $value === "" ? null : $value;
 }
 
-function hotspot_compute_color($incidentCount, $panicCount) {
-  if ($incidentCount >= 3 || $panicCount >= 1) return "red";
-  if ($incidentCount >= 2) return "orange";
+/**
+ * Rule-based crime severity weight.
+ * This follows a Crime Harm Index / Crime Severity Score style weighting:
+ * SS = Σ(n_i * w_i)
+ */
+function hotspot_crime_weight(?string $incidentType, ?string $crimeCategory = null, $storedSeverity = null): float {
+  if ($storedSeverity !== null && is_numeric($storedSeverity) && (float)$storedSeverity > 0) {
+    return (float)$storedSeverity;
+  }
+
+  $name = strtoupper(trim((string)$incidentType));
+  $category = strtoupper(trim((string)$crimeCategory));
+
+  $weights = [
+    "MURDER" => 10,
+    "HOMICIDE" => 10,
+    "RAPE" => 9,
+    "ROBBERY" => 8,
+    "CARNAPPING" => 8,
+    "SERIOUS PHYSICAL INJURY" => 7,
+    "PHYSICAL INJURY" => 6,
+    "DRUG" => 6,
+    "DRUG-RELATED" => 6,
+    "DRUG RELATED" => 6,
+    "BURGLARY" => 6,
+    "ASSAULT" => 5,
+    "THEFT" => 3,
+    "THIEF" => 3,
+    "VANDALISM" => 2,
+    "PUBLIC DISTURBANCE" => 1
+  ];
+
+  foreach ($weights as $keyword => $weight) {
+    if ($name === $keyword || str_contains($name, $keyword)) {
+      return (float)$weight;
+    }
+  }
+
+  if ($category === "INDEX") return 5.0;
+  if ($category === "SPECIAL_LAW") return 4.0;
+  if ($category === "NON_INDEX") return 3.0;
+
+  return 2.0;
+}
+
+function hotspot_compute_color($incidentCount, $panicCount, $severityScoreTotal = 0, $maxCrimeWeight = 0) {
+  $incidentCount = (int)$incidentCount;
+  $panicCount = (int)$panicCount;
+  $severityScoreTotal = (float)$severityScoreTotal;
+  $maxCrimeWeight = (float)$maxCrimeWeight;
+
+  // Severe single-crime hotspot trigger, e.g., murder, robbery, rape.
+  if ($maxCrimeWeight >= 8) return "red";
+
+  // Strong aggregate severity or active panic trigger.
+  if ($severityScoreTotal >= 15 || $panicCount >= 1) return "red";
+
+  // Moderate aggregate severity or multiple low/moderate crimes.
+  if ($severityScoreTotal >= 8 || $incidentCount >= 2) return "orange";
+
+  // One low-severity verified crime is monitored but not high-risk.
   if ($incidentCount >= 1) return "green";
+
   return "none";
 }
 
@@ -211,6 +270,9 @@ function hotspot_incident_rows(
     SELECT
       id,
       reporter_user_id,
+      incident_type,
+      crime_category,
+      severity_score,
       lat,
       lng,
       province,
@@ -296,12 +358,27 @@ function get_computed_hotspots(
     $incidentCount = 0;
     $panicCount = 0;
     $panicScore = 0;
+    $severityScoreTotal = 0.0;
+    $maxCrimeWeight = 0.0;
     $lastDetected = null;
 
     foreach ($incidentRows as $r) {
       $d = hotspot_distance_meters($hLat, $hLng, (float)$r["lat"], (float)$r["lng"]);
+
       if ($d <= $radius) {
         $incidentCount++;
+
+        $weight = hotspot_crime_weight(
+          $r["incident_type"] ?? null,
+          $r["crime_category"] ?? null,
+          $r["severity_score"] ?? null
+        );
+
+        $severityScoreTotal += $weight;
+        if ($weight > $maxCrimeWeight) {
+          $maxCrimeWeight = $weight;
+        }
+
         if ($lastDetected === null || strtotime($r["date_reported"]) > strtotime($lastDetected)) {
           $lastDetected = $r["date_reported"];
         }
@@ -313,6 +390,7 @@ function get_computed_hotspots(
       if ($d <= $radius) {
         $panicCount++;
         $panicScore += (($p["level"] ?? "") === "urgent") ? 2 : 1;
+
         if ($lastDetected === null || strtotime($p["created_at"]) > strtotime($lastDetected)) {
           $lastDetected = $p["created_at"];
         }
@@ -323,15 +401,16 @@ function get_computed_hotspots(
       continue;
     }
 
-    $color = hotspot_compute_color($incidentCount, $panicCount);
+    $color = hotspot_compute_color($incidentCount, $panicCount, $severityScoreTotal, $maxCrimeWeight);
     $riskLevel = hotspot_compute_risk_level($color);
-    $score = $incidentCount + $panicScore;
 
     $pointCount = $incidentCount + $panicCount;
     $areaM2 = hotspot_area_m2($radius);
     $densityValue = hotspot_density_value($pointCount, $radius);
     $densityPerKm2 = hotspot_density_per_km2($pointCount, $radius);
     $densityLevel = hotspot_density_level($densityPerKm2);
+
+    $score = $severityScoreTotal + $panicScore;
 
     $out[] = [
       "id" => (int)$h["id"],
@@ -350,7 +429,9 @@ function get_computed_hotspots(
       "panic_count" => $panicCount,
       "panic_score" => $panicScore,
       "point_count" => $pointCount,
-      "score" => $score,
+      "severity_score_total" => round($severityScoreTotal, 2),
+      "max_crime_weight" => round($maxCrimeWeight, 2),
+      "score" => round($score, 2),
       "area_m2" => round($areaM2, 2),
       "density_value" => round($densityValue, 8),
       "density_per_km2" => round($densityPerKm2, 2),
@@ -365,6 +446,9 @@ function get_computed_hotspots(
     $ra = $rank[$a["highlight_color"]] ?? 0;
     $rb = $rank[$b["highlight_color"]] ?? 0;
     if ($ra !== $rb) return $rb <=> $ra;
+
+    $severityCmp = ($b["severity_score_total"] ?? 0) <=> ($a["severity_score_total"] ?? 0);
+    if ($severityCmp !== 0) return $severityCmp;
 
     $densityCmp = ($b["density_per_km2"] ?? 0) <=> ($a["density_per_km2"] ?? 0);
     if ($densityCmp !== 0) return $densityCmp;
