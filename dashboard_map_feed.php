@@ -1,49 +1,41 @@
 <?php
 require_once __DIR__ . "/require_admin_or_super_admin.php";
 require_once __DIR__ . "/admin_scope_helpers.php";
+require_once __DIR__ . "/hotspot_lib.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
 try {
   $scope = admin_scope_from_auth($pdo, $AUTH_USER);
 
-  // -------------------------
-  // HOTSPOTS
-  // -------------------------
-  $hotspotParams = [];
-  $hotspotWhere = " WHERE active = 1 AND lat IS NOT NULL AND lng IS NOT NULL ";
-  $hotspotWhere .= scope_where_clause("province", $scope, $hotspotParams, ":hotspot_province");
-  $hotspotWhere .= scope_city_where_clause("city_municipality", $scope, $hotspotParams, ":hotspot_city");
+  $days = (int)($_GET["days"] ?? 30);
+  if ($days < 1) $days = 30;
+  if ($days > 365) $days = 365;
 
-  $hotspotStmt = $pdo->prepare("
-    SELECT
-      id,
-      name,
-      region,
-      province,
-      city_municipality,
-      barangay,
-      lat,
-      lng,
-      radius_m,
-      hotspot_type,
-      risk_level,
-      last_detected_at,
-      created_at
-    FROM crime_hotspots
-    $hotspotWhere
-    ORDER BY
-      CASE risk_level
-        WHEN 'HIGH' THEN 1
-        WHEN 'MEDIUM' THEN 2
-        WHEN 'LOW' THEN 3
-        ELSE 4
-      END,
-      last_detected_at DESC,
-      created_at DESC
-  ");
-  $hotspotStmt->execute($hotspotParams);
-  $hotspots = $hotspotStmt->fetchAll(PDO::FETCH_ASSOC);
+  // -------------------------
+  // HOTSPOTS (computed with density)
+  // -------------------------
+  $provinceFilter = null;
+  $cityFilter = null;
+  $hotspotRole = !empty($scope["is_global"]) ? "super_admin" : "admin";
+
+  if (empty($scope["is_global"])) {
+    $provinceFilter = trim((string)($scope["station_province"] ?? ""));
+    $cityFilter = trim((string)($scope["station_city_municipality"] ?? ""));
+
+    if ($provinceFilter === "" || $cityFilter === "") {
+      throw new Exception("Station scope is incomplete.");
+    }
+  }
+
+  $hotspots = get_computed_hotspots(
+    $pdo,
+    $days,
+    $provinceFilter ?: null,
+    $cityFilter ?: null,
+    $hotspotRole,
+    null
+  );
 
   // -------------------------
   // PANIC QUEUE
@@ -154,6 +146,9 @@ try {
   echo json_encode([
     "ok" => true,
     "scope" => $scope,
+    "filters" => [
+      "days" => $days
+    ],
 
     "hotspots" => array_map(function ($r) {
       return [
@@ -168,6 +163,16 @@ try {
         "radius_m" => isset($r["radius_m"]) ? (int)$r["radius_m"] : 0,
         "hotspot_type" => $r["hotspot_type"] ?? null,
         "risk_level" => strtoupper((string)($r["risk_level"] ?? "LOW")),
+        "highlight_color" => $r["highlight_color"] ?? "none",
+        "incident_count" => isset($r["incident_count"]) ? (int)$r["incident_count"] : 0,
+        "panic_count" => isset($r["panic_count"]) ? (int)$r["panic_count"] : 0,
+        "panic_score" => isset($r["panic_score"]) ? (int)$r["panic_score"] : 0,
+        "point_count" => isset($r["point_count"]) ? (int)$r["point_count"] : 0,
+        "score" => isset($r["score"]) ? (int)$r["score"] : 0,
+        "area_m2" => isset($r["area_m2"]) ? (float)$r["area_m2"] : 0,
+        "density_value" => isset($r["density_value"]) ? (float)$r["density_value"] : 0,
+        "density_per_km2" => isset($r["density_per_km2"]) ? (float)$r["density_per_km2"] : 0,
+        "density_level" => strtoupper((string)($r["density_level"] ?? "LOW")),
         "last_detected_at" => $r["last_detected_at"] ?? null,
         "created_at" => $r["created_at"] ?? null
       ];
