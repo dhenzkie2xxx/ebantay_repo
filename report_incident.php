@@ -85,6 +85,42 @@ function compute_severity_score(
   return round($C + $V + $S + $P + $R, 2);
 }
 
+function fallback_crime_severity_weight(string $incidentType, string $crimeCategory = "OTHER"): float {
+  $name = strtoupper(trim($incidentType));
+  $category = strtoupper(trim($crimeCategory));
+
+  $weights = [
+    "MURDER" => 10,
+    "HOMICIDE" => 10,
+    "RAPE" => 9,
+    "ROBBERY" => 8,
+    "CARNAPPING" => 8,
+    "SERIOUS PHYSICAL INJURY" => 7,
+    "PHYSICAL INJURY" => 6,
+    "DRUG" => 6,
+    "DRUG-RELATED" => 6,
+    "DRUG RELATED" => 6,
+    "BURGLARY" => 6,
+    "ASSAULT" => 5,
+    "THEFT" => 3,
+    "THIEF" => 3,
+    "VANDALISM" => 2,
+    "PUBLIC DISTURBANCE" => 1
+  ];
+
+  foreach ($weights as $keyword => $weight) {
+    if ($name === $keyword || str_contains($name, $keyword)) {
+      return (float)$weight;
+    }
+  }
+
+  if ($category === "INDEX") return 5.0;
+  if ($category === "SPECIAL_LAW") return 4.0;
+  if ($category === "NON_INDEX") return 3.0;
+
+  return 2.0;
+}
+
 function find_recent_same_user_incident(
   PDO $pdo,
   int $userId,
@@ -122,15 +158,6 @@ function find_recent_same_user_incident(
   return null;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Rule-based duplicate detection aligned to manuscript:
-| - same incident_type
-| - spatial threshold via Haversine
-| - time threshold via date_incident_from
-| - narrative similarity is supplementary only
-|--------------------------------------------------------------------------
-*/
 function find_duplicate_incident(
   PDO $pdo,
   int $userId,
@@ -187,8 +214,6 @@ function find_duplicate_incident(
       $similarity = round($percent, 2);
     }
 
-    // Primary duplicate rule = same type + near location + near time
-    // Narrative similarity is only supporting evidence, not mandatory.
     $r['distance_m'] = (int) round($distanceM);
     $r['time_diff_sec'] = (int) $timeDiffSec;
     $r['text_similarity'] = $similarity;
@@ -218,18 +243,12 @@ function reverse_geocode_scope(float $lat, float $lng): array {
   $context = stream_context_create($opts);
   $raw = @file_get_contents($url, false, $context);
   if ($raw === false) {
-    return [
-      "ok" => false,
-      "message" => "Reverse geocoding service unavailable"
-    ];
+    return ["ok" => false, "message" => "Reverse geocoding service unavailable"];
   }
 
   $json = json_decode($raw, true);
   if (!is_array($json)) {
-    return [
-      "ok" => false,
-      "message" => "Invalid geocoding response"
-    ];
+    return ["ok" => false, "message" => "Invalid geocoding response"];
   }
 
   $addr = $json["address"] ?? [];
@@ -291,11 +310,7 @@ function can_user_use_protected_features(array $user): bool {
   $status = strtolower(trim((string)($user["account_status"] ?? "")));
   $valid = strtolower(trim((string)($user["valid"] ?? "")));
 
-  if (in_array($status, ["active", "verified"], true) && $valid === "valid") {
-    return true;
-  }
-
-  return false;
+  return in_array($status, ["active", "verified"], true) && $valid === "valid";
 }
 
 function feature_block_message(array $user): string {
@@ -328,13 +343,6 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Accept token from:
-| 1) POST token
-| 2) Authorization: Bearer <token>
-|--------------------------------------------------------------------------
-*/
 $postToken   = normalize_text($_POST["token"] ?? "");
 $headerToken = bearer_token();
 $token       = $postToken !== "" ? $postToken : $headerToken;
@@ -363,12 +371,7 @@ $clientRiskStatus    = strtoupper(normalize_text($_POST["risk_status"] ?? "SAFE"
 $clientRiskDistanceM = $_POST["risk_distance_m"] ?? null;
 $clientRiskRadiusM   = $_POST["risk_radius_m"] ?? 250;
 
-if (
-  $token === "" ||
-  $narrative === "" ||
-  $lat === null ||
-  $lng === null
-) {
+if ($token === "" || $narrative === "" || $lat === null || $lng === null) {
   out(400, ["ok" => false, "message" => "Missing required fields"]);
 }
 
@@ -486,10 +489,17 @@ try {
   $crimeCategory = "OTHER";
   $focusCrimeCode = null;
   $cirasOffenseCode = null;
+  $crimeSeverityWeight = null;
 
   if ($crimeTypeId !== null) {
     $crimeStmt = $pdo->prepare("
-      SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
+      SELECT
+        id,
+        crime_name,
+        crime_category,
+        focus_crime_code,
+        ciras_offense_code,
+        severity_weight
       FROM crime_types
       WHERE id = ? AND is_active = 1
       LIMIT 1
@@ -506,6 +516,9 @@ try {
     $crimeCategory = $crimeRow["crime_category"] ?: "OTHER";
     $focusCrimeCode = $crimeRow["focus_crime_code"] ?: null;
     $cirasOffenseCode = $crimeRow["ciras_offense_code"] ?: null;
+    $crimeSeverityWeight = is_numeric($crimeRow["severity_weight"] ?? null)
+      ? (float)$crimeRow["severity_weight"]
+      : null;
   } else {
     if ($incidentTypeRaw === "") {
       out(400, ["ok" => false, "message" => "Incident type is required"]);
@@ -513,6 +526,33 @@ try {
 
     $incidentType = $incidentTypeRaw;
     $crimeCategory = "OTHER";
+
+    $crimeStmt = $pdo->prepare("
+      SELECT
+        id,
+        crime_name,
+        crime_category,
+        focus_crime_code,
+        ciras_offense_code,
+        severity_weight
+      FROM crime_types
+      WHERE LOWER(TRIM(crime_name)) = LOWER(TRIM(?))
+        AND is_active = 1
+      LIMIT 1
+    ");
+    $crimeStmt->execute([$incidentType]);
+    $crimeRow = $crimeStmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($crimeRow) {
+      $resolvedCrimeTypeId = (int)$crimeRow["id"];
+      $incidentType = $crimeRow["crime_name"];
+      $crimeCategory = $crimeRow["crime_category"] ?: "OTHER";
+      $focusCrimeCode = $crimeRow["focus_crime_code"] ?: null;
+      $cirasOffenseCode = $crimeRow["ciras_offense_code"] ?: null;
+      $crimeSeverityWeight = is_numeric($crimeRow["severity_weight"] ?? null)
+        ? (float)$crimeRow["severity_weight"]
+        : null;
+    }
   }
 
   $existingRecent = find_recent_same_user_incident(
@@ -598,12 +638,15 @@ try {
     $reportDelayMinutes = max(0, (int)round($delay));
   }
 
-  $severityScore = compute_severity_score($crimeCategory, 0, 0, 0, $riskStatus, $isHotspotRelated);
+  if ($crimeSeverityWeight !== null && $crimeSeverityWeight > 0) {
+    $severityScore = round($crimeSeverityWeight, 2);
+  } else {
+    $fallback = fallback_crime_severity_weight($incidentType, $crimeCategory);
+    $oldComputed = compute_severity_score($crimeCategory, 0, 0, 0, $riskStatus, $isHotspotRelated);
+    $severityScore = round(max($fallback, $oldComputed), 2);
+  }
 
-  // Keep as PENDING during submission.
-  // Duplicate confirmation should happen during admin verification.
   $verificationStatus = 'PENDING';
-
   $incidentCode = generate_incident_code($pdo);
 
   $pdo->beginTransaction();
