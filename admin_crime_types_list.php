@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/require_super_admin.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -10,10 +10,12 @@ try {
       crime_name,
       crime_category,
       focus_crime_code,
-      ciras_offense_code
+      ciras_offense_code,
+      severity_weight,
+      is_active
     FROM crime_types
     WHERE is_active = 1
-    ORDER BY crime_name ASC
+    ORDER BY crime_category ASC, crime_name ASC
   ");
 
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -27,6 +29,8 @@ try {
         "crime_category" => $r["crime_category"],
         "focus_crime_code" => $r["focus_crime_code"],
         "ciras_offense_code" => $r["ciras_offense_code"],
+        "severity_weight" => isset($r["severity_weight"]) ? (float)$r["severity_weight"] : 2.0,
+        "is_active" => (int)$r["is_active"]
       ];
     }, $rows)
   ]);
