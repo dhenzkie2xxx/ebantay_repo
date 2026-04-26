@@ -48,6 +48,8 @@ auth_out(200, [
     "role" => $user["role"],
     "valid" => $user["valid"] ?? null,
     "account_status" => $user["account_status"] ?? null,
+    "duty_status" => $user["duty_status"] ?? "offline",
+    "last_seen_at" => $user["last_seen_at"] ?? null,
     "account_flag_status" => $user["account_flag_status"] ?? "none",
     "false_report_count" => isset($user["false_report_count"]) ? (int)$user["false_report_count"] : 0,
     "false_alarm_count" => isset($user["false_alarm_count"]) ? (int)$user["false_alarm_count"] : 0,

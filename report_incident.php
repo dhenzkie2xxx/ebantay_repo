@@ -3,6 +3,7 @@ require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/location_resolver.php";
 require_once __DIR__ . "/station_assignment_helper.php";
+require_once __DIR__ . "/dispatch_detection_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -891,6 +892,19 @@ try {
     }
   }
 
+  $dispatch = null;
+
+  if ($assignedStationId) {
+    $dispatch = dispatch_create_detected_assignment(
+      $pdo,
+      "incident",
+      $incidentId,
+      $assignedStationId,
+      $lat,
+      $lng
+    );
+  }
+
   $pdo->commit();
 
   out(200, [
@@ -921,6 +935,7 @@ try {
         "distance_m" => isset($assignedStation["distance_m"]) ? (int)$assignedStation["distance_m"] : null
       ] : null
     ],
+    "dispatch" => $dispatch,
     "risk" => [
       "status" => $riskStatus,
       "distance_m" => $riskDistanceM,

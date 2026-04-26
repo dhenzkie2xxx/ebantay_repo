@@ -3,6 +3,7 @@ require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/location_resolver.php";
 require_once __DIR__ . "/station_assignment_helper.php";
+require_once __DIR__ . "/dispatch_detection_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -260,6 +261,7 @@ try {
   $cityMunicipality = $canon["city_municipality"];
 
   $assignedStation = assign_panic_station($pdo, $lat, $lng, $province);
+
   $nearestPoliceOnField = function_exists("find_nearest_police_on_field")
     ? find_nearest_police_on_field($pdo, $lat, $lng, $province)
     : null;
@@ -298,10 +300,25 @@ try {
     $deviceTimeSql
   ]);
 
+  $panicId = (int)$pdo->lastInsertId();
+
+  $dispatch = null;
+
+  if ($assignedStationId) {
+    $dispatch = dispatch_create_detected_assignment(
+      $pdo,
+      "panic",
+      $panicId,
+      $assignedStationId,
+      $lat,
+      $lng
+    );
+  }
+
   out(200, [
     "ok" => true,
     "message" => "Panic received",
-    "id" => (int)$pdo->lastInsertId(),
+    "id" => $panicId,
     "level" => $level,
     "scope" => [
       "region" => $region,
@@ -313,6 +330,7 @@ try {
       "rule" => $assignmentRule,
       "assigned_station_id" => $assignedStationId
     ],
+    "dispatch" => $dispatch,
     "assigned_station" => $assignedStation ? [
       "id" => (int)$assignedStation["id"],
       "station_name" => $assignedStation["station_name"] ?? null,

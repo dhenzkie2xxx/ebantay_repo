@@ -1,0 +1,160 @@
+<?php
+require_once __DIR__ . "/auth_helpers.php";
+require_once __DIR__ . "/db.php";
+
+header("Content-Type: application/json; charset=UTF-8");
+
+function out($code,$payload){
+    http_response_code($code);
+    echo json_encode($payload);
+    exit;
+}
+
+if($_SERVER["REQUEST_METHOD"] !== "POST"){
+    out(405,[
+      "ok"=>false,
+      "message"=>"Method not allowed"
+    ]);
+}
+
+$token = bearer_token();
+
+if(!$token){
+   out(401,["ok"=>false,"message"=>"Missing token"]);
+}
+
+try{
+
+$user = auth_get_user_by_token($pdo,$token);
+
+if(!$user){
+    out(401,["ok"=>false,"message"=>"Unauthorized"]);
+}
+
+/*
+Keep your existing auth helper logic untouched
+*/
+$gate = auth_admin_station_gate($user);
+if($gate){
+   out($gate["code"],$gate["payload"]);
+}
+
+if($user["role"] !== "admin"){
+   out(403,[
+      "ok"=>false,
+      "message"=>"Only Station Admin can create Police on Field accounts."
+   ]);
+}
+
+$data = json_decode(file_get_contents("php://input"),true);
+
+$firstname = trim($data["firstname"] ?? "");
+$lastname  = trim($data["lastname"] ?? "");
+$email     = trim($data["email"] ?? "");
+$username  = trim($data["username"] ?? "");
+$password  = trim($data["password"] ?? "");
+
+if(
+ empty($firstname) ||
+ empty($lastname) ||
+ empty($email) ||
+ empty($username) ||
+ empty($password)
+){
+   out(400,[
+      "ok"=>false,
+      "message"=>"All fields required."
+   ]);
+}
+
+/* duplicate username/email */
+$chk=$pdo->prepare("
+SELECT id
+FROM users
+WHERE username=?
+OR email=?
+LIMIT 1
+");
+$chk->execute([$username,$email]);
+
+if($chk->fetch()){
+   out(409,[
+      "ok"=>false,
+      "message"=>"Username or email already exists."
+   ]);
+}
+
+/*
+Station admin owns the account created
+inherits station_id
+*/
+$hash=password_hash($password,PASSWORD_DEFAULT);
+
+$stmt=$pdo->prepare("
+INSERT INTO users(
+ lastname,
+ firstname,
+ email,
+ username,
+ password_hash,
+ role,
+ station_id,
+ valid,
+ account_status,
+ is_email_verified,
+ approved_by,
+ approved_at
+)
+VALUES(
+ ?,?,?,?,?,?,
+ ?, 'valid',
+ 'active',
+ 1,
+ ?,
+ NOW()
+)
+");
+
+$stmt->execute([
+ $lastname,
+ $firstname,
+ $email,
+ $username,
+ $hash,
+ 'police_on_field',
+ $user["station_id"],
+ $user["id"]
+]);
+
+$newId=$pdo->lastInsertId();
+
+/* initialize profile row */
+$profile=$pdo->prepare("
+INSERT INTO user_profiles(
+ user_id,
+ city_municipality,
+ province,
+ region
+)
+VALUES(?,?,?,?)
+");
+
+$profile->execute([
+  $newId,
+  $user["station_city_municipality"] ?? null,
+  $user["station_province"] ?? null,
+  $user["station_region"] ?? null
+]);
+
+out(200,[
+ "ok"=>true,
+ "message"=>"Police on Field account created successfully.",
+ "user_id"=>$newId
+]);
+
+}catch(Throwable $e){
+ out(500,[
+   "ok"=>false,
+   "message"=>$e->getMessage()
+ ]);
+}

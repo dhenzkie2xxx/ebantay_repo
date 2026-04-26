@@ -44,6 +44,8 @@ function auth_get_user_by_token(PDO $pdo, string $token): ?array {
       u.api_token_expires,
       u.station_id,
       u.account_status,
+      u.duty_status,
+      u.last_seen_at,
       u.account_flag_status,
       u.false_report_count,
       u.false_alarm_count,

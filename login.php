@@ -37,6 +37,7 @@ try {
       u.is_email_verified,
       u.station_id,
       u.account_status,
+      u.account_flag_status,
       u.rejected_reason,
 
       ps.station_name,
@@ -78,7 +79,12 @@ try {
     exit;
   }
 
-  if ($user["role"] !== "citizen" && $user["role"] !== "admin" && $user["role"] !== "super_admin") {
+  if (
+    $user["role"] !== "citizen" &&
+    $user["role"] !== "admin" &&
+    $user["role"] !== "super_admin" &&
+    $user["role"] !== "police_on_field"
+  ) {
     http_response_code(403);
     echo json_encode([
       "ok" => false,
@@ -184,6 +190,75 @@ try {
         "account_status" => $accountStatus
       ], auth_station_scope($user)),
       "rejected_reason" => $user["rejected_reason"] ?? null
+    ]);
+    exit;
+  }
+
+  if ($user["role"] === "police_on_field") {
+    $stationStatus = $user["station_verification_status"] ?? null;
+    $stationActive = (int)($user["station_is_active"] ?? 0);
+    $accountStatus = $user["account_status"] ?? "pending";
+
+    if (($user["valid"] ?? "unvalid") !== "valid") {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "code" => "ACCOUNT_NOT_VALID",
+        "message" => "Police on Field account is not valid."
+      ]);
+      exit;
+    }
+
+    if ($accountStatus === "disabled") {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "code" => "ACCOUNT_DISABLED",
+        "message" => "Your Police on Field account is disabled."
+      ]);
+      exit;
+    }
+
+    if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "code" => "ACCOUNT_SUSPENDED",
+        "message" => "Your Police on Field account is suspended."
+      ]);
+      exit;
+    }
+
+    if (
+      empty($user["station_id"]) ||
+      $stationStatus !== "approved" ||
+      $stationActive !== 1 ||
+      $accountStatus !== "active"
+    ) {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "code" => "POLICE_ACCOUNT_NOT_ACTIVE",
+        "message" => "Police on Field account or assigned station is not active."
+      ]);
+      exit;
+    }
+
+    echo json_encode([
+      "ok" => true,
+      "message" => "Login successful",
+      "token" => $token,
+      "token_expires" => $expires,
+      "onboarding_only" => false,
+      "user" => array_merge([
+        "id" => (int)$user["id"],
+        "lastname" => $user["lastname"],
+        "firstname" => $user["firstname"],
+        "email" => $user["email"],
+        "username" => $user["username"],
+        "role" => $user["role"],
+        "account_status" => $accountStatus
+      ], auth_station_scope($user))
     ]);
     exit;
   }
