@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -300,6 +301,21 @@ try {
     $message,
     $sourceType === "incident" ? $sourceId : null
   ]);
+
+  write_audit_log(
+    $pdo,
+    $admin,
+    "GO_SIGNAL_SENT",
+    "responder_assignment",
+    $assignmentId,
+    "Station Admin sent Go Signal to Police on Field.",
+    [
+      "assignment_id" => $assignmentId,
+      "incident_id" => $sourceType === "incident" ? $sourceId : null,
+      "panic_id" => $sourceType === "panic" ? $sourceId : null,
+      "target_user_id" => $policeUserId
+    ]
+  );
 
   $pdo->commit();
 

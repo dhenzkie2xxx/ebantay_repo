@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -242,6 +243,31 @@ try {
       $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null
     ]);
   }
+
+  $auditAction = "ASSIGNMENT_RESOLVED";
+
+  if ($outcome === "FALSE_REPORT" && $assignment["source_type"] === "incident") {
+    $auditAction = "FALSE_REPORT_MARKED";
+  }
+
+  if ($outcome === "FALSE_REPORT" && $assignment["source_type"] === "panic") {
+    $auditAction = "FALSE_ALARM_MARKED";
+  }
+
+  write_audit_log(
+    $pdo,
+    $police,
+    $auditAction,
+    "responder_assignment",
+    $assignmentId,
+    "Police on Field updated assignment outcome to " . $outcome . ".",
+    [
+      "assignment_id" => $assignmentId,
+      "incident_id" => $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
+      "panic_id" => $assignment["source_type"] === "panic" ? (int)$assignment["source_id"] : null,
+      "target_user_id" => $admin ? (int)$admin["id"] : null
+    ]
+  );
 
   $pdo->commit();
 

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -107,7 +108,21 @@ try {
     ");
   }
 
-  $update->execute([(int)$policeUserId]);
+    $update->execute([(int)$policeUserId]);
+
+  write_audit_log(
+    $pdo,
+    $admin,
+    $action === "disable" ? "POLICE_ACCOUNT_DISABLED" : "POLICE_ACCOUNT_ENABLED",
+    "user",
+    (int)$policeUserId,
+    $action === "disable"
+      ? "Station Admin disabled a Police on Field account."
+      : "Station Admin enabled a Police on Field account.",
+    [
+      "target_user_id" => (int)$policeUserId
+    ]
+  );
 
   out(200, [
     "ok" => true,

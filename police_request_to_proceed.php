@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -200,6 +201,21 @@ try {
       $sourceType === "incident" ? $sourceId : null
     ]);
   }
+
+    write_audit_log(
+    $pdo,
+    $police,
+    "PROCEED_REQUEST_RECEIVED",
+    "responder_assignment",
+    $assignmentId,
+    "Police on Field requested confirmation to proceed.",
+    [
+      "assignment_id" => $assignmentId,
+      "incident_id" => $sourceType === "incident" ? $sourceId : null,
+      "panic_id" => $sourceType === "panic" ? $sourceId : null,
+      "target_user_id" => $admin ? (int)$admin["id"] : null
+    ]
+  );
 
   $pdo->commit();
 

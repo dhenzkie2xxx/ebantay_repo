@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -145,6 +146,18 @@ $profile->execute([
   $user["station_province"] ?? null,
   $user["station_region"] ?? null
 ]);
+
+write_audit_log(
+  $pdo,
+  $user,
+  "POLICE_ACCOUNT_CREATED",
+  "user",
+  $newId,
+  "Station Admin created a Police on Field account.",
+  [
+    "target_user_id" => $newId
+  ]
+);
 
 out(200,[
  "ok"=>true,

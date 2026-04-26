@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -190,6 +191,23 @@ try {
     $notifMessage,
     $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null
   ]);
+
+    write_audit_log(
+    $pdo,
+    $admin,
+    $decision === "approve" ? "PROCEED_APPROVED" : "PROCEED_DENIED",
+    "responder_assignment",
+    $assignmentId,
+    $decision === "approve"
+      ? "Station Admin approved Police on Field request to proceed."
+      : "Station Admin denied Police on Field request to proceed.",
+    [
+      "assignment_id" => $assignmentId,
+      "incident_id" => $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
+      "panic_id" => $assignment["source_type"] === "panic" ? (int)$assignment["source_id"] : null,
+      "target_user_id" => (int)$assignment["assigned_user_id"]
+    ]
+  );
 
   $pdo->commit();
 
