@@ -62,13 +62,13 @@ SELECT
  id,
  incident_code,
  title,
+ incident_type,
  verification_status,
  created_at,
  updated_at,
- category,
- priority_level
+ severity_score
 FROM incident_reports
-WHERE user_id=?
+WHERE reporter_user_id=?
 ORDER BY created_at DESC
 LIMIT 100
 ");
@@ -113,10 +113,10 @@ $feed[]=[
  "type"=>"incident",
  "id"=>(int)$r["id"],
  "reference"=>$r["incident_code"],
- "title"=>$r["title"],
+ "title"=>$r["title"] ?: "Incident Report",
  "status"=>$status,
- "priority"=>$r["priority_level"],
- "category"=>$r["category"],
+ "priority"=>$r["severity_score"] ?? null,
+ "category"=>$r["incident_type"] ?? "Incident",
  "created_at"=>$r["created_at"],
  "updated_at"=>$r["updated_at"]
 ];
