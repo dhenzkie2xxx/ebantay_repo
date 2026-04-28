@@ -248,6 +248,56 @@ function find_nearest_station_anywhere(PDO $pdo, float $lat, float $lng): ?array
   return $row ?: null;
 }
 
+function find_scope_stations(PDO $pdo, ?string $province, ?string $city): array {
+
+  if(!$province){
+    return [];
+  }
+
+  if($city){
+    $stmt=$pdo->prepare("
+      SELECT
+       id,
+       station_name,
+       station_type,
+       lat,
+       lng,
+       city_municipality,
+       province
+      FROM police_stations
+      WHERE verification_status='approved'
+      AND is_active=1
+      AND lat IS NOT NULL
+      AND lng IS NOT NULL
+      AND LOWER(TRIM(province))=LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality))=LOWER(TRIM(?))
+      ORDER BY station_name
+    ");
+    $stmt->execute([$province,$city]);
+  } else {
+    $stmt=$pdo->prepare("
+      SELECT
+       id,
+       station_name,
+       station_type,
+       lat,
+       lng,
+       city_municipality,
+       province
+      FROM police_stations
+      WHERE verification_status='approved'
+      AND is_active=1
+      AND lat IS NOT NULL
+      AND lng IS NOT NULL
+      AND LOWER(TRIM(province))=LOWER(TRIM(?))
+      ORDER BY station_name
+    ");
+    $stmt->execute([$province]);
+  }
+
+  return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   out(405, [
     "ok" => false,
@@ -336,7 +386,12 @@ try {
       "geocoding_status" => $geo["ok"] ? "ok" : "failed",
       "geocoding_message" => $geoMessage
     ],
-    "station" => $nearest ? format_station_response($nearest, $assignmentRule) : null
+    "station" => $nearest ? format_station_response($nearest,$assignmentRule):null,
+    "stations" => find_scope_stations(
+      $pdo,
+      $province,
+      $cityMunicipality
+    )
   ]);
 
 } catch (Throwable $e) {
