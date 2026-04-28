@@ -87,7 +87,7 @@ SELECT
  level,
  status,
  created_at,
- updated_at
+ server_time
 FROM panic_requests
 WHERE user_id=?
 ORDER BY created_at DESC
@@ -133,7 +133,7 @@ $feed[]=[
  "status"=>$status,
  "level"=>$p["level"],
  "created_at"=>$p["created_at"],
- "updated_at"=>$p["updated_at"]
+ "updated_at"=>$p["server_time"] ?? $p["created_at"]
 ];
 }
 
