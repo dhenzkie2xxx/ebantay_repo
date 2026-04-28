@@ -84,7 +84,6 @@ $incidents = $incidentStmt->fetchAll(PDO::FETCH_ASSOC);
 $panicStmt = $pdo->prepare("
 SELECT
  id,
- panic_code,
  level,
  status,
  created_at,
@@ -129,7 +128,7 @@ $status = strtoupper($p["status"] ?? "NEW");
 $feed[]=[
  "type"=>"panic",
  "id"=>(int)$p["id"],
- "reference"=>$p["panic_code"],
+ "reference"=>"PANIC-" . str_pad((string)$p["id"], 6, "0", STR_PAD_LEFT),
  "title"=>"Panic Request",
  "status"=>$status,
  "level"=>$p["level"],
