@@ -41,8 +41,8 @@ function http_get_json(string $url): array {
       CURLOPT_RETURNTRANSFER => true,
       CURLOPT_FOLLOWLOCATION => true,
       CURLOPT_HTTPHEADER => $headers,
-      CURLOPT_TIMEOUT => 20,
-      CURLOPT_CONNECTTIMEOUT => 10,
+      CURLOPT_TIMEOUT => 12,
+      CURLOPT_CONNECTTIMEOUT => 6,
       CURLOPT_SSL_VERIFYPEER => true,
       CURLOPT_SSL_VERIFYHOST => 2,
     ]);
@@ -55,16 +55,10 @@ function http_get_json(string $url): array {
     if ($raw !== false && $status >= 200 && $status < 300) {
       $json = json_decode($raw, true);
       if (is_array($json)) {
-        return [
-          "ok" => true,
-          "json" => $json
-        ];
+        return ["ok" => true, "json" => $json];
       }
 
-      return [
-        "ok" => false,
-        "message" => "Invalid geocoding JSON response"
-      ];
+      return ["ok" => false, "message" => "Invalid geocoding JSON response"];
     }
 
     return [
@@ -77,7 +71,7 @@ function http_get_json(string $url): array {
     "http" => [
       "method" => "GET",
       "header" => "User-Agent: eBantay/1.0\r\nAccept: application/json\r\n",
-      "timeout" => 20
+      "timeout" => 12
     ],
     "ssl" => [
       "verify_peer" => true,
@@ -90,7 +84,6 @@ function http_get_json(string $url): array {
 
   if ($raw === false) {
     $error = error_get_last();
-
     return [
       "ok" => false,
       "message" => "Geocoding request failed" . (!empty($error["message"]) ? ": " . $error["message"] : "")
@@ -99,16 +92,10 @@ function http_get_json(string $url): array {
 
   $json = json_decode($raw, true);
   if (!is_array($json)) {
-    return [
-      "ok" => false,
-      "message" => "Invalid geocoding JSON response"
-    ];
+    return ["ok" => false, "message" => "Invalid geocoding JSON response"];
   }
 
-  return [
-    "ok" => true,
-    "json" => $json
-  ];
+  return ["ok" => true, "json" => $json];
 }
 
 function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
@@ -167,12 +154,6 @@ function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
     }
   }
 
-  /*
-    Important fallback:
-    Some areas such as Cagayan de Oro may return city but no clean province.
-    This resolves:
-    Cagayan de Oro -> Misamis Oriental -> Northern Mindanao
-  */
   if ($cityMunicipality !== "") {
     $fromCity = resolve_scope_from_city($pdo, $cityMunicipality);
 
@@ -212,6 +193,61 @@ function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
   ];
 }
 
+function format_station_response(array $nearest, string $assignmentRule): array {
+  return [
+    "id" => (int)$nearest["id"],
+    "station_name" => $nearest["station_name"],
+    "station_code" => $nearest["station_code"] ?? null,
+    "station_type" => $nearest["station_type"] ?? null,
+    "region" => $nearest["region"] ?? null,
+    "province" => $nearest["province"] ?? null,
+    "city_municipality" => $nearest["city_municipality"] ?? null,
+    "barangay" => $nearest["barangay"] ?? null,
+    "sitio" => $nearest["sitio"] ?? null,
+    "street_address" => $nearest["street_address"] ?? null,
+    "full_address" => $nearest["full_address"] ?? null,
+    "contact_person" => $nearest["contact_person"] ?? null,
+    "contact_position" => $nearest["contact_position"] ?? null,
+    "contact_mobile" => $nearest["contact_mobile"] ?? null,
+    "contact_landline" => $nearest["contact_landline"] ?? null,
+    "contact_email" => $nearest["contact_email"] ?? null,
+    "emergency_contact" => $nearest["emergency_contact"] ?? null,
+    "operating_hours" => $nearest["operating_hours"] ?? null,
+    "lat" => isset($nearest["lat"]) ? (float)$nearest["lat"] : null,
+    "lng" => isset($nearest["lng"]) ? (float)$nearest["lng"] : null,
+    "distance_m" => isset($nearest["distance_m"]) ? (int)$nearest["distance_m"] : null,
+    "assignment_rule" => $assignmentRule
+  ];
+}
+
+function find_nearest_station_anywhere(PDO $pdo, float $lat, float $lng): ?array {
+  $stmt = $pdo->prepare("
+    SELECT
+      ps.*,
+      ROUND(
+        6371000 * 2 * ASIN(
+          SQRT(
+            POWER(SIN(RADIANS(ps.lat - ?) / 2), 2) +
+            COS(RADIANS(?)) * COS(RADIANS(ps.lat)) *
+            POWER(SIN(RADIANS(ps.lng - ?) / 2), 2)
+          )
+        )
+      ) AS distance_m
+    FROM police_stations ps
+    WHERE ps.lat IS NOT NULL
+      AND ps.lng IS NOT NULL
+      AND ps.verification_status = 'approved'
+      AND ps.is_active = 1
+    ORDER BY distance_m ASC
+    LIMIT 1
+  ");
+
+  $stmt->execute([$lat, $lat, $lng]);
+  $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+  return $row ?: null;
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "GET") {
   out(405, [
     "ok" => false,
@@ -242,52 +278,52 @@ if ($lat < -90 || $lat > 90 || $lng < -180 || $lng > 180) {
 try {
   $geo = reverse_geocode_scope($pdo, $lat, $lng);
 
-  if (!$geo["ok"]) {
-    out(502, [
-      "ok" => false,
-      "message" => $geo["message"]
-    ]);
+  $region = null;
+  $province = null;
+  $cityMunicipality = null;
+  $barangay = null;
+  $geoMessage = null;
+
+  if ($geo["ok"]) {
+    $scope = $geo["address"] ?? [];
+
+    $region = normalize_scope_value($scope["region"] ?? null);
+    $province = normalize_scope_value($scope["province"] ?? null);
+    $cityMunicipality = normalize_scope_value($scope["city_municipality"] ?? null);
+    $barangay = normalize_scope_value($scope["barangay"] ?? null);
+  } else {
+    $geoMessage = $geo["message"] ?? "Reverse geocoding failed";
   }
 
-  $scope = $geo["address"] ?? [];
+  $nearest = null;
+  $assignmentRule = "GPS_FALLBACK";
 
-  $region = normalize_scope_value($scope["region"] ?? null);
-  $province = normalize_scope_value($scope["province"] ?? null);
-  $cityMunicipality = normalize_scope_value($scope["city_municipality"] ?? null);
-  $barangay = normalize_scope_value($scope["barangay"] ?? null);
-
-  if (!$province || !$cityMunicipality) {
-    out(422, [
-      "ok" => false,
-      "message" => "Unable to determine province/city from current location",
-      "debug_scope" => [
-        "region" => $region,
-        "province" => $province,
-        "city_municipality" => $cityMunicipality,
-        "barangay" => $barangay
-      ]
-    ]);
-  }
-
-  $nearest = find_nearest_station_in_city(
-    $pdo,
-    $lat,
-    $lng,
-    $province,
-    $cityMunicipality
-  );
-
-  $assignmentRule = "CITY_FIRST";
-
-  if (!$nearest) {
-    $nearest = find_nearest_station_in_province(
+  if ($province && $cityMunicipality) {
+    $nearest = find_nearest_station_in_city(
       $pdo,
       $lat,
       $lng,
-      $province
+      $province,
+      $cityMunicipality
     );
 
-    $assignmentRule = "PROVINCE_FALLBACK";
+    $assignmentRule = "CITY_FIRST";
+
+    if (!$nearest) {
+      $nearest = find_nearest_station_in_province(
+        $pdo,
+        $lat,
+        $lng,
+        $province
+      );
+
+      $assignmentRule = "PROVINCE_FALLBACK";
+    }
+  }
+
+  if (!$nearest) {
+    $nearest = find_nearest_station_anywhere($pdo, $lat, $lng);
+    $assignmentRule = "GPS_FALLBACK";
   }
 
   out(200, [
@@ -296,35 +332,37 @@ try {
       "region" => $region,
       "province" => $province,
       "city_municipality" => $cityMunicipality,
-      "barangay" => $barangay
+      "barangay" => $barangay,
+      "geocoding_status" => $geo["ok"] ? "ok" : "failed",
+      "geocoding_message" => $geoMessage
     ],
-    "station" => $nearest ? [
-      "id" => (int)$nearest["id"],
-      "station_name" => $nearest["station_name"],
-      "station_code" => $nearest["station_code"],
-      "station_type" => $nearest["station_type"],
-      "region" => $nearest["region"],
-      "province" => $nearest["province"],
-      "city_municipality" => $nearest["city_municipality"],
-      "barangay" => $nearest["barangay"],
-      "sitio" => $nearest["sitio"],
-      "street_address" => $nearest["street_address"],
-      "full_address" => $nearest["full_address"],
-      "contact_person" => $nearest["contact_person"],
-      "contact_position" => $nearest["contact_position"],
-      "contact_mobile" => $nearest["contact_mobile"],
-      "contact_landline" => $nearest["contact_landline"],
-      "contact_email" => $nearest["contact_email"],
-      "emergency_contact" => $nearest["emergency_contact"],
-      "operating_hours" => $nearest["operating_hours"],
-      "lat" => (float)$nearest["lat"],
-      "lng" => (float)$nearest["lng"],
-      "distance_m" => (int)$nearest["distance_m"],
-      "assignment_rule" => $assignmentRule
-    ] : null
+    "station" => $nearest ? format_station_response($nearest, $assignmentRule) : null
   ]);
 
 } catch (Throwable $e) {
+  $fallback = null;
+
+  try {
+    $fallback = find_nearest_station_anywhere($pdo, $lat, $lng);
+  } catch (Throwable $ignored) {
+    $fallback = null;
+  }
+
+  if ($fallback) {
+    out(200, [
+      "ok" => true,
+      "scope" => [
+        "region" => null,
+        "province" => null,
+        "city_municipality" => null,
+        "barangay" => null,
+        "geocoding_status" => "failed",
+        "geocoding_message" => $e->getMessage()
+      ],
+      "station" => format_station_response($fallback, "GPS_FALLBACK")
+    ]);
+  }
+
   out(500, [
     "ok" => false,
     "message" => "Server error",
