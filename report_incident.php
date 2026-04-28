@@ -225,7 +225,18 @@ function find_duplicate_incident(
   return null;
 }
 
-function reverse_geocode_scope(float $lat, float $lng): array {
+function looks_like_region_name(?string $value): bool {
+  $value = strtolower(trim((string)$value));
+  if ($value === "") return false;
+
+  return
+    str_contains($value, "region") ||
+    str_contains($value, "national capital region") ||
+    $value === "ncr" ||
+    str_contains($value, "metro manila");
+}
+
+function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
   $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
     . urlencode((string)$lat)
     . "&lon="
@@ -237,12 +248,13 @@ function reverse_geocode_scope(float $lat, float $lng): array {
       "header" =>
         "User-Agent: eBantay/1.0\r\n" .
         "Accept: application/json\r\n",
-      "timeout" => 15
+      "timeout" => 20
     ]
   ];
 
   $context = stream_context_create($opts);
   $raw = @file_get_contents($url, false, $context);
+
   if ($raw === false) {
     return ["ok" => false, "message" => "Reverse geocoding service unavailable"];
   }
@@ -254,7 +266,8 @@ function reverse_geocode_scope(float $lat, float $lng): array {
 
   $addr = $json["address"] ?? [];
 
-  $barangay = $addr["suburb"]
+  $barangay =
+    $addr["suburb"]
     ?? $addr["village"]
     ?? $addr["hamlet"]
     ?? $addr["neighbourhood"]
@@ -262,33 +275,55 @@ function reverse_geocode_scope(float $lat, float $lng): array {
     ?? $addr["city_district"]
     ?? "";
 
-  $cityMunicipality = $addr["city"]
+  $cityMunicipality =
+    $addr["city"]
     ?? $addr["municipality"]
     ?? $addr["town"]
+    ?? $addr["city_district"]
     ?? "";
 
   $state = trim((string)($addr["state"] ?? ""));
-  $region = $addr["region"]
+
+  $region =
+    $addr["region"]
     ?? $addr["state_district"]
     ?? "";
 
-  $province = $addr["province"]
+  $province =
+    $addr["province"]
     ?? $addr["county"]
     ?? "";
 
   if ($province === "" && $state !== "") {
-    $stateLower = strtolower($state);
-    $looksLikeRegion =
-      str_contains($stateLower, "region") ||
-      str_contains($stateLower, "national capital region") ||
-      $stateLower === "ncr" ||
-      str_contains($stateLower, "metro manila");
-
-    if ($looksLikeRegion) {
+    if (looks_like_region_name($state)) {
       if ($region === "") $region = $state;
     } else {
       $province = $state;
     }
+  }
+
+  if ($cityMunicipality !== "") {
+    $fromCity = resolve_scope_from_city($pdo, $cityMunicipality);
+
+    if (!empty($fromCity["ok"])) {
+      $cityMunicipality = $fromCity["city_municipality"] ?: $cityMunicipality;
+
+      if ($province === "") {
+        $province = $fromCity["province"] ?? "";
+      }
+
+      if ($region === "" || looks_like_region_name($region)) {
+        $region = $fromCity["region"] ?? $region;
+      }
+    }
+  }
+
+  $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+
+  if (!empty($canon["ok"])) {
+    $region = $canon["region"] ?? $region;
+    $province = $canon["province"] ?? $province;
+    $cityMunicipality = $canon["city_municipality"] ?? $cityMunicipality;
   }
 
   $road = $addr["road"] ?? "";
@@ -440,7 +475,7 @@ try {
     ]);
   }
 
-  $geo = reverse_geocode_scope($lat, $lng);
+$geo = reverse_geocode_scope($pdo, $lat, $lng);
 
   $barangay = null;
   $cityMunicipality = null;
