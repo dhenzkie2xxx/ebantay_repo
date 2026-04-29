@@ -512,23 +512,36 @@ try {
     $adminId
   ]);
 
-  recalc_hotspots_after_incident_save($pdo, $incidentId);
+  $hotspotDebug = null;
+  $alertDebug = null;
+
+  try {
+    recalc_hotspots_after_incident_save($pdo, $incidentId);
+  } catch (Throwable $hotspotError) {
+    $hotspotDebug = $hotspotError->getMessage();
+  }
 
   $alertResult = ["created" => 0, "targets" => []];
 
-  if (strtoupper((string)$old["incident_phase"]) !== "BLOTTERED") {
-    $alertResult = queue_incident_hotspot_alerts($pdo, $incidentId);
+  try {
+    if (strtoupper((string)$old["incident_phase"]) !== "BLOTTERED") {
+      $alertResult = queue_incident_hotspot_alerts($pdo, $incidentId);
+    }
+  } catch (Throwable $alertError) {
+    $alertDebug = $alertError->getMessage();
   }
 
   $pdo->commit();
 
   echo json_encode([
-    "ok" => true,
-    "message" => "Blotter filed successfully",
-    "blotter_entry_number" => $blotterEntryNumber,
-    "irf_entry_number" => $irfEntryNumber,
-    "alert_created_count" => $alertResult["created"] ?? 0
-  ]);
+  "ok" => true,
+  "message" => "Blotter filed successfully",
+  "blotter_entry_number" => $blotterEntryNumber,
+  "irf_entry_number" => $irfEntryNumber,
+  "alert_created_count" => $alertResult["created"] ?? 0,
+  "hotspot_warning" => $hotspotDebug,
+  "alert_warning" => $alertDebug
+]);
 
 } catch (Throwable $e) {
   if ($pdo->inTransaction()) {
