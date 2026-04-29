@@ -5,97 +5,11 @@ require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-$data = json_decode(file_get_contents("php://input"), true);
-
-$incidentId = (int)($data["incident_id"] ?? 0);
-$title = trim((string)($data["title"] ?? ""));
-$crimeTypeId = (int)($data["crime_type_id"] ?? 0);
-$incomingIncidentType = trim((string)($data["incident_type"] ?? ""));
-$incomingCrimeCategory = strtoupper(trim((string)($data["crime_category"] ?? "OTHER")));
-if (!in_array($incomingCrimeCategory, ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"], true)) {
-  $incomingCrimeCategory = "OTHER";
-}
-$narrative = trim((string)($data["narrative"] ?? ""));
-
-$incomingReportSource = strtolower(trim((string)($data["report_source"] ?? "")));
-$incomingReportChannel = strtolower(trim((string)($data["report_channel"] ?? "")));
-
-$irfEntryNumber = trim((string)($data["irf_entry_number"] ?? ""));
-$notes = trim((string)($data["admin_notes"] ?? ""));
-
-$hasKnownSuspect = (int)($data["has_known_suspect"] ?? 0) ? 1 : 0;
-$suspectCount = max(0, (int)($data["suspect_count"] ?? 0));
-$victimCount = max(0, (int)($data["victim_count"] ?? 0));
-$witnessCount = max(0, (int)($data["witness_count"] ?? 0));
-$propertyLossFlag = (int)($data["property_loss_flag"] ?? 0) ? 1 : 0;
-$estimatedDamageValue = $data["estimated_damage_value"] ?? null;
-
-$dateIncidentFrom = trim((string)($data["date_incident_from"] ?? ""));
-$dateIncidentTo = trim((string)($data["date_incident_to"] ?? ""));
-$placeOfIncident = trim((string)($data["place_of_incident"] ?? ""));
-$sitio = trim((string)($data["sitio"] ?? ""));
-$barangay = trim((string)($data["barangay"] ?? ""));
-$cityMunicipality = trim((string)($data["city_municipality"] ?? ""));
-$province = trim((string)($data["province"] ?? ""));
-$region = trim((string)($data["region"] ?? ""));
-$locationType = trim((string)($data["location_type"] ?? ""));
-$caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
-
-$lat = isset($data["lat"]) && $data["lat"] !== "" ? (float)$data["lat"] : null;
-$lng = isset($data["lng"]) && $data["lng"] !== "" ? (float)$data["lng"] : null;
-
-$persons = $data["persons"] ?? [];
-$properties = $data["properties"] ?? [];
-$officers = $data["officers"] ?? [];
-
-$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
-$allowedSources = ["walk_in", "hotline", "police_encoder", "other"];
-$allowedChannels = ["station", "phone", "radio", "other"];
-$allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
-$allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
-$allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
-$allowedOfficerRoles = ["ADMINISTERING_OFFICER","DUTY_INVESTIGATOR","ASSISTING_OFFICER","DESK_OFFICER","ENCODER"];
-
-if (!in_array($caseStatus, $allowedCase, true)) {
-  $caseStatus = "OPEN";
-}
-
-if ($incidentId <= 0) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "Missing incident_id"]);
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
   exit;
 }
-
-if ($title === "" || ($crimeTypeId <= 0 && $incomingIncidentType === "") || $narrative === "" || $barangay === "" || $cityMunicipality === "" || $province === "") {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "Missing required fields"]);
-  exit;
-}
-
-if ($lat === null || $lng === null) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "Pin the incident location on the map"]);
-  exit;
-}
-
-if ($estimatedDamageValue === "" || $estimatedDamageValue === null) {
-  $estimatedDamageValue = null;
-} else {
-  $estimatedDamageValue = (float)$estimatedDamageValue;
-}
-
-$dateIncidentFrom = $dateIncidentFrom !== "" ? $dateIncidentFrom : null;
-$dateIncidentTo = $dateIncidentTo !== "" ? $dateIncidentTo : null;
-$irfEntryNumber = $irfEntryNumber !== "" ? $irfEntryNumber : null;
-$placeOfIncident = $placeOfIncident !== "" ? $placeOfIncident : null;
-$sitio = $sitio !== "" ? $sitio : null;
-$barangay = $barangay !== "" ? $barangay : null;
-$cityMunicipality = $cityMunicipality !== "" ? $cityMunicipality : null;
-$province = $province !== "" ? $province : null;
-$region = $region !== "" ? $region : null;
-$locationType = $locationType !== "" ? $locationType : null;
-
-$adminId = (int)($AUTH_USER["id"] ?? 0);
 
 function norm_text($v): ?string {
   $v = trim((string)($v ?? ""));
@@ -115,11 +29,12 @@ function current_admin_scope(PDO $pdo, array $AUTH_USER): array {
     ];
   }
 
-  $stationProvince = norm_text($AUTH_USER["station_province"] ?? null);
-  $stationCity = norm_text($AUTH_USER["station_city_municipality"] ?? null);
-  $stationRegion = norm_text($AUTH_USER["station_region"] ?? null);
-
-  $canon = canonicalize_scope($pdo, $stationRegion, $stationProvince, $stationCity);
+  $canon = canonicalize_scope(
+    $pdo,
+    norm_text($AUTH_USER["station_region"] ?? null),
+    norm_text($AUTH_USER["station_province"] ?? null),
+    norm_text($AUTH_USER["station_city_municipality"] ?? null)
+  );
 
   if (empty($canon["ok"])) {
     throw new Exception("Unable to resolve your station city/municipality scope.");
@@ -164,6 +79,103 @@ function generate_irf_number(PDO $pdo): string {
   return sprintf("IRF-%s-%06d", $year, $next);
 }
 
+$data = json_decode(file_get_contents("php://input"), true);
+
+if (!is_array($data)) {
+  out(400, ["ok" => false, "message" => "Invalid JSON body"]);
+}
+
+$incidentId = (int)($data["incident_id"] ?? 0);
+$title = trim((string)($data["title"] ?? ""));
+$crimeTypeId = (int)($data["crime_type_id"] ?? 0);
+$incomingIncidentType = trim((string)($data["incident_type"] ?? ""));
+$incomingCrimeCategory = strtoupper(trim((string)($data["crime_category"] ?? "OTHER")));
+
+if (!in_array($incomingCrimeCategory, ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"], true)) {
+  $incomingCrimeCategory = "OTHER";
+}
+
+$narrative = trim((string)($data["narrative"] ?? ""));
+$incomingReportSource = strtolower(trim((string)($data["report_source"] ?? "")));
+$incomingReportChannel = strtolower(trim((string)($data["report_channel"] ?? "")));
+
+$irfEntryNumber = trim((string)($data["irf_entry_number"] ?? ""));
+$notes = trim((string)($data["admin_notes"] ?? ""));
+
+$hasKnownSuspect = (int)($data["has_known_suspect"] ?? 0) ? 1 : 0;
+$suspectCount = max(0, (int)($data["suspect_count"] ?? 0));
+$victimCount = max(0, (int)($data["victim_count"] ?? 0));
+$witnessCount = max(0, (int)($data["witness_count"] ?? 0));
+$propertyLossFlag = (int)($data["property_loss_flag"] ?? 0) ? 1 : 0;
+$estimatedDamageValue = $data["estimated_damage_value"] ?? null;
+
+$dateIncidentFrom = trim((string)($data["date_incident_from"] ?? ""));
+$dateIncidentTo = trim((string)($data["date_incident_to"] ?? ""));
+$placeOfIncident = trim((string)($data["place_of_incident"] ?? ""));
+$sitio = trim((string)($data["sitio"] ?? ""));
+$barangay = trim((string)($data["barangay"] ?? ""));
+$cityMunicipality = trim((string)($data["city_municipality"] ?? ""));
+$province = trim((string)($data["province"] ?? ""));
+$region = trim((string)($data["region"] ?? ""));
+$locationType = trim((string)($data["location_type"] ?? ""));
+
+$caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
+$lat = isset($data["lat"]) && $data["lat"] !== "" ? (float)$data["lat"] : null;
+$lng = isset($data["lng"]) && $data["lng"] !== "" ? (float)$data["lng"] : null;
+
+$persons = is_array($data["persons"] ?? null) ? $data["persons"] : [];
+$properties = is_array($data["properties"] ?? null) ? $data["properties"] : [];
+$officers = is_array($data["officers"] ?? null) ? $data["officers"] : [];
+
+$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+$allowedSources = ["walk_in", "hotline", "police_encoder", "other"];
+$allowedChannels = ["station", "phone", "radio", "other"];
+$allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
+$allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
+$allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
+$allowedOfficerRoles = ["ADMINISTERING_OFFICER","DUTY_INVESTIGATOR","ASSISTING_OFFICER","DESK_OFFICER","ENCODER"];
+
+if (!in_array($caseStatus, $allowedCase, true)) {
+  $caseStatus = "OPEN";
+}
+
+if ($incidentId <= 0) {
+  out(400, ["ok" => false, "message" => "Missing incident_id"]);
+}
+
+if (
+  $title === "" ||
+  ($crimeTypeId <= 0 && $incomingIncidentType === "") ||
+  $narrative === "" ||
+  $barangay === "" ||
+  $cityMunicipality === "" ||
+  $province === ""
+) {
+  out(400, ["ok" => false, "message" => "Missing required fields"]);
+}
+
+if ($lat === null || $lng === null) {
+  out(400, ["ok" => false, "message" => "Pin the incident location on the map"]);
+}
+
+$estimatedDamageValue =
+  ($estimatedDamageValue === "" || $estimatedDamageValue === null)
+    ? null
+    : (float)$estimatedDamageValue;
+
+$dateIncidentFrom = $dateIncidentFrom !== "" ? $dateIncidentFrom : null;
+$dateIncidentTo = $dateIncidentTo !== "" ? $dateIncidentTo : null;
+$irfEntryNumber = $irfEntryNumber !== "" ? $irfEntryNumber : null;
+$placeOfIncident = $placeOfIncident !== "" ? $placeOfIncident : null;
+$sitio = $sitio !== "" ? $sitio : null;
+$barangay = $barangay !== "" ? $barangay : null;
+$cityMunicipality = $cityMunicipality !== "" ? $cityMunicipality : null;
+$province = $province !== "" ? $province : null;
+$region = $region !== "" ? $region : null;
+$locationType = $locationType !== "" ? $locationType : null;
+
+$adminId = (int)($AUTH_USER["id"] ?? 0);
+
 try {
   $pdo->beginTransaction();
 
@@ -207,40 +219,41 @@ try {
 
   $crime = null;
 
-if ($crimeTypeId > 0) {
-  $crimeStmt = $pdo->prepare("
-    SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
-    FROM crime_types
-    WHERE id = ? AND is_active = 1
-    LIMIT 1
-  ");
-  $crimeStmt->execute([$crimeTypeId]);
-  $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
-}
+  if ($crimeTypeId > 0) {
+    $crimeStmt = $pdo->prepare("
+      SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
+      FROM crime_types
+      WHERE id = ? AND is_active = 1
+      LIMIT 1
+    ");
+    $crimeStmt->execute([$crimeTypeId]);
+    $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
+  }
 
-if (!$crime && $incomingIncidentType !== "") {
-  $crimeStmt = $pdo->prepare("
-    SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
-    FROM crime_types
-    WHERE LOWER(TRIM(crime_name)) = LOWER(TRIM(?))
-      AND is_active = 1
-    LIMIT 1
-  ");
-  $crimeStmt->execute([$incomingIncidentType]);
-  $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
-}
+  if (!$crime && $incomingIncidentType !== "") {
+    $crimeStmt = $pdo->prepare("
+      SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
+      FROM crime_types
+      WHERE LOWER(TRIM(crime_name)) = LOWER(TRIM(?))
+        AND is_active = 1
+      LIMIT 1
+    ");
+    $crimeStmt->execute([$incomingIncidentType]);
+    $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
+  }
 
-if (!$crime) {
-  $crime = [
-    "id" => null,
-    "crime_name" => $incomingIncidentType,
-    "crime_category" => $incomingCrimeCategory ?: "OTHER",
-    "focus_crime_code" => null,
-    "ciras_offense_code" => null
-  ];
-}
+  if (!$crime) {
+    $crime = [
+      "id" => null,
+      "crime_name" => $incomingIncidentType !== "" ? $incomingIncidentType : "Other Incident",
+      "crime_category" => $incomingCrimeCategory ?: "OTHER",
+      "focus_crime_code" => null,
+      "ciras_offense_code" => null
+    ];
+  }
 
   $isMobileOrigin = strtolower((string)$old["report_source"]) === "mobile_app";
+
   if ($isMobileOrigin) {
     $reportSource = "mobile_app";
     $reportChannel = "mobile";
@@ -294,9 +307,11 @@ if (!$crime) {
       province = COALESCE(?, province),
       region = ?,
       location_type = ?,
-      admin_notes = ?
+      admin_notes = ?,
+      updated_at = UTC_TIMESTAMP()
     WHERE id = ?
   ");
+
   $upd->execute([
     $blotterEntryNumber,
     $irfEntryNumber,
@@ -374,6 +389,7 @@ if (!$crime) {
 
     $familyName = trim((string)($p["family_name"] ?? ""));
     $firstName = trim((string)($p["first_name"] ?? ""));
+
     if ($familyName === "" && $firstName === "") continue;
 
     $personIns->execute([
@@ -483,6 +499,7 @@ if (!$crime) {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   ");
+
   $hist->execute([
     $incidentId,
     $old["incident_phase"],
@@ -498,6 +515,7 @@ if (!$crime) {
   recalc_hotspots_after_incident_save($pdo, $incidentId);
 
   $alertResult = ["created" => 0, "targets" => []];
+
   if (strtoupper((string)$old["incident_phase"]) !== "BLOTTERED") {
     $alertResult = queue_incident_hotspot_alerts($pdo, $incidentId);
   }
@@ -511,10 +529,13 @@ if (!$crime) {
     "irf_entry_number" => $irfEntryNumber,
     "alert_created_count" => $alertResult["created"] ?? 0
   ]);
+
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
-  http_response_code(500);
-  echo json_encode([
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
+
+  out(500, [
     "ok" => false,
     "message" => "Server error",
     "debug" => $e->getMessage()

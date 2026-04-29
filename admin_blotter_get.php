@@ -48,8 +48,8 @@ $params = [$id];
 
 if (!$isSuperAdmin) {
   $whereScope = "
-    AND LOWER(TRIM(province)) = LOWER(TRIM(?))
-    AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+    AND LOWER(TRIM(ir.province)) = LOWER(TRIM(?))
+    AND LOWER(TRIM(ir.city_municipality)) = LOWER(TRIM(?))
   ";
   $params[] = $stationProvince;
   $params[] = $stationCity;
@@ -57,43 +57,44 @@ if (!$isSuperAdmin) {
 
 $stmt = $pdo->prepare("
   SELECT
-    id,
-    incident_code,
-    crime_type_id,
-    title,
-    incident_type,
-    crime_category,
-    narrative,
-    verification_status,
-    incident_phase,
-    case_status,
-    report_source,
-    report_channel,
-    blotter_entry_number,
-    irf_entry_number,
-    has_known_suspect,
-    suspect_count,
-    victim_count,
-    witness_count,
-    property_loss_flag,
-    estimated_damage_value,
-    date_incident_from,
-    date_incident_to,
-    place_of_incident,
-    sitio,
-    barangay,
-    city_municipality,
-    province,
-    region,
-    location_type,
-    lat,
-    lng,
-    accuracy_m,
-    admin_notes,
-    date_reported,
-    created_at
-  FROM incident_reports
-  WHERE id = ?
+    ir.id,
+    ir.incident_code,
+    ir.crime_type_id,
+    ir.title,
+    COALESCE(NULLIF(TRIM(ir.incident_type), ''), ct.crime_name, 'Other Incident') AS incident_type,
+    COALESCE(NULLIF(TRIM(ir.crime_category), ''), ct.crime_category, 'OTHER') AS crime_category,
+    ir.narrative,
+    ir.verification_status,
+    ir.incident_phase,
+    ir.case_status,
+    ir.report_source,
+    ir.report_channel,
+    ir.blotter_entry_number,
+    ir.irf_entry_number,
+    ir.has_known_suspect,
+    ir.suspect_count,
+    ir.victim_count,
+    ir.witness_count,
+    ir.property_loss_flag,
+    ir.estimated_damage_value,
+    ir.date_incident_from,
+    ir.date_incident_to,
+    ir.place_of_incident,
+    ir.sitio,
+    ir.barangay,
+    ir.city_municipality,
+    ir.province,
+    ir.region,
+    ir.location_type,
+    ir.lat,
+    ir.lng,
+    ir.accuracy_m,
+    ir.admin_notes,
+    ir.date_reported,
+    ir.created_at
+  FROM incident_reports ir
+  LEFT JOIN crime_types ct ON ct.id = ir.crime_type_id
+  WHERE ir.id = ?
   $whereScope
   LIMIT 1
 ");
@@ -147,8 +148,8 @@ echo json_encode([
     "incident_code" => $row["incident_code"],
     "crime_type_id" => $row["crime_type_id"] !== null ? (int)$row["crime_type_id"] : "",
     "title" => $row["title"],
-    "incident_type" => $row["incident_type"],
-    "crime_category" => $row["crime_category"],
+    "incident_type" => $row["incident_type"] ?: "Other Incident",
+    "crime_category" => $row["crime_category"] ?: "OTHER",
     "narrative" => $row["narrative"],
     "verification_status" => $row["verification_status"],
     "incident_phase" => $row["incident_phase"],
