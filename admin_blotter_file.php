@@ -10,6 +10,11 @@ $data = json_decode(file_get_contents("php://input"), true);
 $incidentId = (int)($data["incident_id"] ?? 0);
 $title = trim((string)($data["title"] ?? ""));
 $crimeTypeId = (int)($data["crime_type_id"] ?? 0);
+$incomingIncidentType = trim((string)($data["incident_type"] ?? ""));
+$incomingCrimeCategory = strtoupper(trim((string)($data["crime_category"] ?? "OTHER")));
+if (!in_array($incomingCrimeCategory, ["INDEX", "NON_INDEX", "SPECIAL_LAW", "OTHER"], true)) {
+  $incomingCrimeCategory = "OTHER";
+}
 $narrative = trim((string)($data["narrative"] ?? ""));
 
 $incomingReportSource = strtolower(trim((string)($data["report_source"] ?? "")));
@@ -61,7 +66,7 @@ if ($incidentId <= 0) {
   exit;
 }
 
-if ($title === "" || $crimeTypeId <= 0 || $narrative === "" || $barangay === "" || $cityMunicipality === "" || $province === "") {
+if ($title === "" || ($crimeTypeId <= 0 && $incomingIncidentType === "") || $narrative === "" || $barangay === "" || $cityMunicipality === "" || $province === "") {
   http_response_code(400);
   echo json_encode(["ok" => false, "message" => "Missing required fields"]);
   exit;
@@ -200,6 +205,9 @@ try {
     throw new Exception("Incident not found or outside your station city/municipality.");
   }
 
+  $crime = null;
+
+if ($crimeTypeId > 0) {
   $crimeStmt = $pdo->prepare("
     SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
     FROM crime_types
@@ -208,10 +216,29 @@ try {
   ");
   $crimeStmt->execute([$crimeTypeId]);
   $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
+}
 
-  if (!$crime) {
-    throw new Exception("Invalid incident type");
-  }
+if (!$crime && $incomingIncidentType !== "") {
+  $crimeStmt = $pdo->prepare("
+    SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
+    FROM crime_types
+    WHERE LOWER(TRIM(crime_name)) = LOWER(TRIM(?))
+      AND is_active = 1
+    LIMIT 1
+  ");
+  $crimeStmt->execute([$incomingIncidentType]);
+  $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
+}
+
+if (!$crime) {
+  $crime = [
+    "id" => null,
+    "crime_name" => $incomingIncidentType,
+    "crime_category" => $incomingCrimeCategory ?: "OTHER",
+    "focus_crime_code" => null,
+    "ciras_offense_code" => null
+  ];
+}
 
   $isMobileOrigin = strtolower((string)$old["report_source"]) === "mobile_app";
   if ($isMobileOrigin) {
@@ -275,7 +302,7 @@ try {
     $irfEntryNumber,
     $reportSource,
     $reportChannel,
-    (int)$crime["id"],
+    $crime["id"] !== null ? (int)$crime["id"] : null,
     $crime["crime_name"],
     $crime["crime_category"],
     $crime["focus_crime_code"],
