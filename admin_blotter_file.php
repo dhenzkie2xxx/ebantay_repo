@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/hotspot_lib.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -91,6 +92,41 @@ $locationType = $locationType !== "" ? $locationType : null;
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
 
+function norm_text($v): ?string {
+  $v = trim((string)($v ?? ""));
+  $v = preg_replace('/\s+/', ' ', $v);
+  return $v === "" ? null : $v;
+}
+
+function current_admin_scope(PDO $pdo, array $AUTH_USER): array {
+  $role = (string)($AUTH_USER["role"] ?? "");
+  $isSuperAdmin = $role === "super_admin";
+
+  if ($isSuperAdmin) {
+    return [
+      "is_super_admin" => true,
+      "province" => null,
+      "city_municipality" => null
+    ];
+  }
+
+  $stationProvince = norm_text($AUTH_USER["station_province"] ?? null);
+  $stationCity = norm_text($AUTH_USER["station_city_municipality"] ?? null);
+  $stationRegion = norm_text($AUTH_USER["station_region"] ?? null);
+
+  $canon = canonicalize_scope($pdo, $stationRegion, $stationProvince, $stationCity);
+
+  if (empty($canon["ok"])) {
+    throw new Exception("Unable to resolve your station city/municipality scope.");
+  }
+
+  return [
+    "is_super_admin" => false,
+    "province" => $canon["province"],
+    "city_municipality" => $canon["city_municipality"]
+  ];
+}
+
 function generate_blotter_number(PDO $pdo): string {
   $year = gmdate("Y");
 
@@ -126,6 +162,20 @@ function generate_irf_number(PDO $pdo): string {
 try {
   $pdo->beginTransaction();
 
+  $scope = current_admin_scope($pdo, $AUTH_USER);
+
+  $scopeSql = "";
+  $scopeParams = [];
+
+  if (!$scope["is_super_admin"]) {
+    $scopeSql = "
+      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+    ";
+    $scopeParams[] = $scope["province"];
+    $scopeParams[] = $scope["city_municipality"];
+  }
+
   $sel = $pdo->prepare("
     SELECT
       incident_phase,
@@ -134,16 +184,20 @@ try {
       report_source,
       report_channel,
       blotter_entry_number,
-      irf_entry_number
+      irf_entry_number,
+      province,
+      city_municipality
     FROM incident_reports
     WHERE id = ?
+    $scopeSql
     LIMIT 1
   ");
-  $sel->execute([$incidentId]);
+
+  $sel->execute(array_merge([$incidentId], $scopeParams));
   $old = $sel->fetch(PDO::FETCH_ASSOC);
 
   if (!$old) {
-    throw new Exception("Incident not found");
+    throw new Exception("Incident not found or outside your station city/municipality.");
   }
 
   $crimeStmt = $pdo->prepare("

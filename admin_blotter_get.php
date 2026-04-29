@@ -1,13 +1,58 @@
 <?php
 require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-$id = (int)($_GET["id"] ?? 0);
-if ($id <= 0) {
-  http_response_code(400);
-  echo json_encode(["ok" => false, "message" => "Missing id"]);
+function out($code, $payload) {
+  http_response_code($code);
+  echo json_encode($payload);
   exit;
+}
+
+function norm_text($v): ?string {
+  $v = trim((string)($v ?? ""));
+  $v = preg_replace('/\s+/', ' ', $v);
+  return $v === "" ? null : $v;
+}
+
+$id = (int)($_GET["id"] ?? 0);
+
+if ($id <= 0) {
+  out(400, ["ok" => false, "message" => "Missing id"]);
+}
+
+$role = (string)($AUTH_USER["role"] ?? "");
+$isSuperAdmin = $role === "super_admin";
+
+$stationProvince = norm_text($AUTH_USER["station_province"] ?? null);
+$stationCity = norm_text($AUTH_USER["station_city_municipality"] ?? null);
+$stationRegion = norm_text($AUTH_USER["station_region"] ?? null);
+
+if (!$isSuperAdmin) {
+  $canon = canonicalize_scope($pdo, $stationRegion, $stationProvince, $stationCity);
+
+  if (empty($canon["ok"])) {
+    out(403, [
+      "ok" => false,
+      "message" => "Unable to resolve your station city/municipality scope."
+    ]);
+  }
+
+  $stationProvince = $canon["province"];
+  $stationCity = $canon["city_municipality"];
+}
+
+$whereScope = "";
+$params = [$id];
+
+if (!$isSuperAdmin) {
+  $whereScope = "
+    AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+    AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+  ";
+  $params[] = $stationProvince;
+  $params[] = $stationCity;
 }
 
 $stmt = $pdo->prepare("
@@ -49,15 +94,18 @@ $stmt = $pdo->prepare("
     created_at
   FROM incident_reports
   WHERE id = ?
+  $whereScope
   LIMIT 1
 ");
-$stmt->execute([$id]);
+
+$stmt->execute($params);
 $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$row) {
-  http_response_code(404);
-  echo json_encode(["ok" => false, "message" => "Incident not found"]);
-  exit;
+  out(404, [
+    "ok" => false,
+    "message" => "Incident not found or outside your station city/municipality."
+  ]);
 }
 
 $personsStmt = $pdo->prepare("
@@ -89,6 +137,11 @@ $officers = $officersStmt->fetchAll(PDO::FETCH_ASSOC);
 
 echo json_encode([
   "ok" => true,
+  "scope" => [
+    "is_super_admin" => $isSuperAdmin,
+    "province" => $isSuperAdmin ? null : $stationProvince,
+    "city_municipality" => $isSuperAdmin ? null : $stationCity
+  ],
   "incident" => [
     "id" => (int)$row["id"],
     "incident_code" => $row["incident_code"],

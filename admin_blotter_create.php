@@ -82,6 +82,41 @@ $locationType = $locationType !== "" ? $locationType : null;
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
 
+function norm_text($v): ?string {
+  $v = trim((string)($v ?? ""));
+  $v = preg_replace('/\s+/', ' ', $v);
+  return $v === "" ? null : $v;
+}
+
+function current_admin_scope(PDO $pdo, array $AUTH_USER): array {
+  $role = (string)($AUTH_USER["role"] ?? "");
+  $isSuperAdmin = $role === "super_admin";
+
+  if ($isSuperAdmin) {
+    return [
+      "is_super_admin" => true,
+      "province" => null,
+      "city_municipality" => null
+    ];
+  }
+
+  $stationProvince = norm_text($AUTH_USER["station_province"] ?? null);
+  $stationCity = norm_text($AUTH_USER["station_city_municipality"] ?? null);
+  $stationRegion = norm_text($AUTH_USER["station_region"] ?? null);
+
+  $canon = canonicalize_scope($pdo, $stationRegion, $stationProvince, $stationCity);
+
+  if (empty($canon["ok"])) {
+    throw new Exception("Unable to resolve your station city/municipality scope.");
+  }
+
+  return [
+    "is_super_admin" => false,
+    "province" => $canon["province"],
+    "city_municipality" => $canon["city_municipality"]
+  ];
+}
+
 /*
 |--------------------------------------------------------------------------
 | Canonicalize province/city scope
@@ -100,6 +135,31 @@ if (!$canon["ok"]) {
 $region = $canon["region"] ?? $region;
 $province = $canon["province"];
 $cityMunicipality = $canon["city_municipality"];
+
+try {
+  $adminScope = current_admin_scope($pdo, $AUTH_USER);
+
+  if (!$adminScope["is_super_admin"]) {
+    if (
+      strtolower(trim($province)) !== strtolower(trim($adminScope["province"])) ||
+      strtolower(trim($cityMunicipality)) !== strtolower(trim($adminScope["city_municipality"]))
+    ) {
+      http_response_code(403);
+      echo json_encode([
+        "ok" => false,
+        "message" => "You can only create blotter records within your assigned station city/municipality."
+      ]);
+      exit;
+    }
+  }
+} catch (Throwable $e) {
+  http_response_code(403);
+  echo json_encode([
+    "ok" => false,
+    "message" => $e->getMessage()
+  ]);
+  exit;
+}
 
 function generate_incident_code(): string {
   return "INC-" . gmdate("Ymd-His") . "-" . substr(strtoupper(bin2hex(random_bytes(3))), 0, 6);
