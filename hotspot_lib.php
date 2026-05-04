@@ -488,3 +488,304 @@ function find_nearest_hotspot(array $hotspots, float $lat, float $lng): ?array {
 
   return $nearest;
 }
+
+if (!function_exists("hotspot_auto_create_from_incident")) {
+  function hotspot_auto_create_from_incident(
+    PDO $pdo,
+    int $incidentId,
+    int $days = 30,
+    int $radiusM = 500,
+    int $minIncidents = 2
+  ): array {
+    $days = max(1, min(365, $days));
+    $radiusM = max(100, $radiusM);
+    $minIncidents = max(2, $minIncidents);
+
+    $stmt = $pdo->prepare("
+      SELECT
+        id,
+        incident_type,
+        crime_category,
+        severity_score,
+        lat,
+        lng,
+        region,
+        province,
+        city_municipality,
+        barangay,
+        date_reported
+      FROM incident_reports
+      WHERE id = ?
+        AND lat IS NOT NULL
+        AND lng IS NOT NULL
+        AND verification_status = 'VERIFIED'
+        AND incident_phase IN (
+          'RESOLVED',
+          'BLOTTERED',
+          'UNDER_INVESTIGATION',
+          'FILED_IN_COURT'
+        )
+      LIMIT 1
+    ");
+    $stmt->execute([$incidentId]);
+    $base = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$base) {
+      return [
+        "ok" => false,
+        "created" => false,
+        "updated" => false,
+        "message" => "Incident is not eligible for hotspot detection."
+      ];
+    }
+
+    $baseLat = (float)$base["lat"];
+    $baseLng = (float)$base["lng"];
+    $province = trim((string)($base["province"] ?? ""));
+    $city = trim((string)($base["city_municipality"] ?? ""));
+
+    /*
+      First: check if an active hotspot already exists near this incident.
+      If yes, attach the incident to that hotspot and update timestamp.
+    */
+    $existingStmt = $pdo->prepare("
+      SELECT
+        id,
+        lat,
+        lng,
+        radius_m
+      FROM crime_hotspots
+      WHERE active = 1
+        AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+    ");
+    $existingStmt->execute([$province, $city]);
+    $existing = $existingStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($existing as $h) {
+      $hLat = (float)$h["lat"];
+      $hLng = (float)$h["lng"];
+      $hRadius = max($radiusM, (int)($h["radius_m"] ?? $radiusM));
+      $dist = hotspot_distance_meters($baseLat, $baseLng, $hLat, $hLng);
+
+      if ($dist <= $hRadius) {
+        $pdo->prepare("
+          UPDATE crime_hotspots
+          SET last_detected_at = UTC_TIMESTAMP()
+          WHERE id = ?
+        ")->execute([(int)$h["id"]]);
+
+        $pdo->prepare("
+          UPDATE incident_reports
+          SET
+            is_hotspot_related = 1,
+            hotspot_id = ?,
+            risk_status = 'RISK',
+            risk_distance_m = ?,
+            risk_radius_m = ?
+          WHERE id = ?
+        ")->execute([
+          (int)$h["id"],
+          (int)round($dist),
+          $hRadius,
+          $incidentId
+        ]);
+
+        return [
+          "ok" => true,
+          "created" => false,
+          "updated" => true,
+          "hotspot_id" => (int)$h["id"],
+          "message" => "Incident attached to existing hotspot."
+        ];
+      }
+    }
+
+    /*
+      Second: collect nearby verified/resolved/blottered incidents.
+    */
+    $nearStmt = $pdo->prepare("
+      SELECT
+        id,
+        incident_type,
+        crime_category,
+        severity_score,
+        lat,
+        lng,
+        region,
+        province,
+        city_municipality,
+        barangay,
+        date_reported
+      FROM incident_reports
+      WHERE lat IS NOT NULL
+        AND lng IS NOT NULL
+        AND verification_status = 'VERIFIED'
+        AND incident_phase IN (
+          'RESOLVED',
+          'BLOTTERED',
+          'UNDER_INVESTIGATION',
+          'FILED_IN_COURT'
+        )
+        AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+        AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+      ORDER BY date_reported DESC
+      LIMIT 500
+    ");
+    $nearStmt->execute([$province, $city, $days]);
+    $rows = $nearStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $cluster = [];
+    $severityTotal = 0.0;
+    $maxWeight = 0.0;
+    $latSum = 0.0;
+    $lngSum = 0.0;
+    $barangayCounts = [];
+
+    foreach ($rows as $r) {
+      $dist = hotspot_distance_meters(
+        $baseLat,
+        $baseLng,
+        (float)$r["lat"],
+        (float)$r["lng"]
+      );
+
+      if ($dist <= $radiusM) {
+        $cluster[] = [
+          "row" => $r,
+          "distance_m" => $dist
+        ];
+
+        $weight = hotspot_crime_weight(
+          $r["incident_type"] ?? "",
+          $r["crime_category"] ?? "",
+          $r["severity_score"] ?? null
+        );
+
+        $severityTotal += $weight;
+        $maxWeight = max($maxWeight, $weight);
+
+        $latSum += (float)$r["lat"];
+        $lngSum += (float)$r["lng"];
+
+        $bgy = trim((string)($r["barangay"] ?? ""));
+        if ($bgy !== "") {
+          $barangayCounts[$bgy] = ($barangayCounts[$bgy] ?? 0) + 1;
+        }
+      }
+    }
+
+    $incidentCount = count($cluster);
+
+    if ($incidentCount < $minIncidents && $maxWeight < 8) {
+      return [
+        "ok" => true,
+        "created" => false,
+        "updated" => false,
+        "incident_count" => $incidentCount,
+        "message" => "Not enough nearby incidents to create a hotspot."
+      ];
+    }
+
+    arsort($barangayCounts);
+    $dominantBarangay = array_key_first($barangayCounts) ?: ($base["barangay"] ?? null);
+
+    $centerLat = $latSum / max(1, $incidentCount);
+    $centerLng = $lngSum / max(1, $incidentCount);
+
+    $color = hotspot_compute_color($incidentCount, 0, $severityTotal, $maxWeight);
+    $riskLevel = hotspot_compute_risk_level($color);
+
+    $name = trim(
+      "Auto Hotspot - " .
+      ($dominantBarangay ?: "Unknown Barangay") .
+      " / " .
+      ($base["city_municipality"] ?: "Unknown City")
+    );
+
+    $insert = $pdo->prepare("
+      INSERT INTO crime_hotspots
+      (
+        name,
+        region,
+        province,
+        city_municipality,
+        barangay,
+        lat,
+        lng,
+        radius_m,
+        hotspot_type,
+        risk_level,
+        active,
+        last_detected_at,
+        created_at
+      )
+      VALUES
+      (
+        ?, ?, ?, ?, ?, ?, ?, ?, 'CRIME_CLUSTER', ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP()
+      )
+    ");
+
+    $insert->execute([
+      $name,
+      $base["region"] ?? null,
+      $base["province"] ?? null,
+      $base["city_municipality"] ?? null,
+      $dominantBarangay,
+      $centerLat,
+      $centerLng,
+      $radiusM,
+      $riskLevel
+    ]);
+
+    $hotspotId = (int)$pdo->lastInsertId();
+
+    $updateIncident = $pdo->prepare("
+      UPDATE incident_reports
+      SET
+        is_hotspot_related = 1,
+        hotspot_id = ?,
+        risk_status = 'RISK',
+        risk_distance_m = ?,
+        risk_radius_m = ?
+      WHERE id = ?
+    ");
+
+    foreach ($cluster as $c) {
+      $updateIncident->execute([
+        $hotspotId,
+        (int)round($c["distance_m"]),
+        $radiusM,
+        (int)$c["row"]["id"]
+      ]);
+    }
+
+    return [
+      "ok" => true,
+      "created" => true,
+      "updated" => false,
+      "hotspot_id" => $hotspotId,
+      "incident_count" => $incidentCount,
+      "severity_score_total" => round($severityTotal, 2),
+      "max_crime_weight" => round($maxWeight, 2),
+      "risk_level" => $riskLevel,
+      "message" => "New hotspot automatically created."
+    ];
+  }
+}
+
+if (!function_exists("recalc_hotspots_after_incident_save")) {
+  function recalc_hotspots_after_incident_save(PDO $pdo, int $incidentId): array {
+    return hotspot_auto_create_from_incident($pdo, $incidentId, 30, 500, 2);
+  }
+}
+
+if (!function_exists("queue_incident_hotspot_alerts")) {
+  function queue_incident_hotspot_alerts(PDO $pdo, int $incidentId): array {
+    return [
+      "created" => 0,
+      "targets" => []
+    ];
+  }
+}
