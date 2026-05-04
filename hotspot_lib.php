@@ -283,8 +283,13 @@ function hotspot_incident_rows(
     WHERE
       lat IS NOT NULL
       AND lng IS NOT NULL
-      AND incident_phase <> 'REJECTED'
       AND verification_status = 'VERIFIED'
+      AND incident_phase IN (
+        'RESOLVED',
+        'BLOTTERED',
+        'UNDER_INVESTIGATION',
+        'FILED_IN_COURT'
+      )
       AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
   ";
   $params = [$days];

@@ -107,7 +107,12 @@ try {
 
   $verifiedWhere = "
     WHERE ir.verification_status = 'VERIFIED'
-      AND ir.incident_phase <> 'REJECTED'
+      AND ir.incident_phase IN (
+        'RESOLVED',
+        'BLOTTERED',
+        'UNDER_INVESTIGATION',
+        'FILED_IN_COURT'
+      )
       AND ir.lat IS NOT NULL
       AND ir.lng IS NOT NULL
   ";
