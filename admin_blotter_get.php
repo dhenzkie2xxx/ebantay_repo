@@ -118,6 +118,106 @@ $personsStmt = $pdo->prepare("
 $personsStmt->execute([$id]);
 $persons = $personsStmt->fetchAll(PDO::FETCH_ASSOC);
 
+$hasReportingPerson = false;
+
+foreach ($persons as $p) {
+  if (strtoupper((string)$p["person_role"]) === "REPORTING_PERSON") {
+    $hasReportingPerson = true;
+    break;
+  }
+}
+
+if (!$hasReportingPerson && !empty($row["reporter_user_id"])) {
+  $userStmt = $pdo->prepare("
+    SELECT
+      u.firstname,
+      u.lastname,
+      u.email,
+      up.mobile_number,
+      up.address_text,
+      up.barangay,
+      up.city_municipality,
+      up.province
+    FROM users u
+    LEFT JOIN user_profiles up ON up.user_id = u.id
+    WHERE u.id = ?
+    LIMIT 1
+  ");
+
+  $userStmt->execute([(int)$row["reporter_user_id"]]);
+  $u = $userStmt->fetch(PDO::FETCH_ASSOC);
+
+  if ($u) {
+    array_unshift($persons, [
+      "id" => 0,
+      "incident_id" => $row["id"],
+      "person_role" => "REPORTING_PERSON",
+      "linked_user_id" => $row["reporter_user_id"],
+
+      "family_name" => $u["lastname"] ?? "",
+      "first_name" => $u["firstname"] ?? "",
+      "middle_name" => "",
+      "qualifier" => "",
+      "nickname" => "",
+
+      "citizenship" => "",
+      "sex_gender" => "",
+      "civil_status" => "",
+      "birth_date" => null,
+      "age" => null,
+      "place_of_birth" => "",
+
+      "home_phone" => "",
+      "mobile_phone" => $u["mobile_number"] ?? "",
+      "email_address" => $u["email"] ?? "",
+
+      "current_address" => $u["address_text"] ?? "",
+      "current_sitio" => "",
+      "current_barangay" => $u["barangay"] ?? "",
+      "current_city" => $u["city_municipality"] ?? "",
+      "current_province" => $u["province"] ?? "",
+
+      "other_address" => "",
+      "other_sitio" => "",
+      "other_barangay" => "",
+      "other_city" => "",
+      "other_province" => "",
+
+      "educational_attainment" => "",
+      "occupation" => "",
+      "work_address" => "",
+      "relation_to_victim" => "",
+
+      "is_afp_pnp_personnel" => 0,
+      "rank_title" => "",
+      "unit_assignment" => "",
+      "group_affiliation" => "",
+
+      "has_previous_criminal_record" => 0,
+      "previous_case_status" => "",
+
+      "height_cm" => null,
+      "weight_kg" => null,
+      "built" => "",
+      "eye_color" => "",
+      "eye_description" => "",
+      "hair_color" => "",
+      "hair_description" => "",
+
+      "under_influence" => "",
+      "under_influence_notes" => "",
+
+      "guardian_name" => "",
+      "guardian_address" => "",
+      "guardian_home_phone" => "",
+      "guardian_mobile_phone" => "",
+
+      "suspect_status" => "UNKNOWN",
+      "created_at" => null
+    ]);
+  }
+}
+
 $propertiesStmt = $pdo->prepare("
   SELECT *
   FROM incident_properties
