@@ -124,6 +124,8 @@ function person_vars(?array $p): array {
       $out[$f] = $p["mobile_phone"] ?? "";
     } elseif ($f === "current_text") {
       $out[$f] = $p["current_address"] ?? "";
+    } elseif ($f === "mobile_phone") {
+      $out[$f] = $p["mobile_phone"] ?? ($p["mobile_number"] ?? "");
     } elseif ($f === "has_previous_criminal_record" || $f === "is_afp_pnp_personnel") {
       $out[$f] = yes_no($p[$f] ?? 0);
     } else {
