@@ -43,20 +43,29 @@ if (!$isSuperAdmin) {
 $where = " WHERE 1=1 ";
 $params = [];
 
+/*
+  Manuscript-aligned blotter rule:
+  Only VERIFIED + RESOLVED incidents can proceed to BLOTTERED.
+
+  Important:
+  RESOLVED is checked using incident_phase, not case_status.
+*/
 if ($mode === "NEW") {
   $where .= "
     AND verification_status = 'VERIFIED'
-    AND case_status = 'RESOLVED'
+    AND incident_phase = 'RESOLVED'
     AND (blotter_entry_number IS NULL OR blotter_entry_number = '')
   ";
 } elseif ($mode === "BLOTTERED") {
-  $where .= " AND incident_phase = 'BLOTTERED' ";
+  $where .= "
+    AND incident_phase = 'BLOTTERED'
+  ";
 } else {
   $where .= "
     AND (
       (
         verification_status = 'VERIFIED'
-        AND case_status = 'RESOLVED'
+        AND incident_phase = 'RESOLVED'
         AND (blotter_entry_number IS NULL OR blotter_entry_number = '')
       )
       OR incident_phase = 'BLOTTERED'
@@ -106,6 +115,7 @@ $sql = "
     region,
     verification_status,
     incident_phase,
+    case_status,
     blotter_entry_number,
     irf_entry_number,
     date_reported,
@@ -142,6 +152,7 @@ try {
         "region" => $r["region"],
         "verification_status" => $r["verification_status"],
         "incident_phase" => $r["incident_phase"],
+        "case_status" => $r["case_status"],
         "blotter_entry_number" => $r["blotter_entry_number"],
         "irf_entry_number" => $r["irf_entry_number"],
         "date_reported" => $r["date_reported"],
