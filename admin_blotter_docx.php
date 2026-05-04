@@ -98,70 +98,60 @@ function officer_full_name(?array $o): string {
 function person_vars(?array $p): array {
   $p = $p ?: [];
 
-  return [
-    "family_name" => $p["family_name"] ?? "",
-    "first_name" => $p["first_name"] ?? "",
-    "middle_name" => $p["middle_name"] ?? "",
-    "qualifier" => $p["qualifier"] ?? "",
-    "nickname" => $p["nickname"] ?? "",
-    "citizenship" => $p["citizenship"] ?? "",
-    "sex_gender" => $p["sex_gender"] ?? "",
-    "civil_status" => $p["civil_status"] ?? "",
-    "birth_date" => $p["birth_date"] ?? "",
-    "age" => $p["age"] ?? "",
-    "place_of_birth" => $p["place_of_birth"] ?? "",
-    "home_phone" => $p["home_phone"] ?? "",
-    "mobile_phone" => $p["mobile_phone"] ?? "",
-    "mobile_number" => $p["mobile_phone"] ?? "",
-    "email_address" => $p["email_address"] ?? "",
-    "current_text" => $p["current_address"] ?? "",
-    "current_address" => $p["current_address"] ?? "",
-    "current_sitio" => $p["current_sitio"] ?? "",
-    "current_barangay" => $p["current_barangay"] ?? "",
-    "current_city" => $p["current_city"] ?? "",
-    "current_province" => $p["current_province"] ?? "",
-    "other_address" => $p["other_address"] ?? "",
-    "other_sitio" => $p["other_sitio"] ?? "",
-    "other_barangay" => $p["other_barangay"] ?? "",
-    "other_city" => $p["other_city"] ?? "",
-    "other_province" => $p["other_province"] ?? "",
-    "educational_attainment" => $p["educational_attainment"] ?? "",
-    "occupation" => $p["occupation"] ?? "",
-    "work_address" => $p["work_address"] ?? "",
-    "relation_to_victim" => $p["relation_to_victim"] ?? "",
-    "rank_title" => $p["rank_title"] ?? "",
-    "unit_assignment" => $p["unit_assignment"] ?? "",
-    "group_affiliation" => $p["group_affiliation"] ?? "",
-    "has_previous_criminal_record" => yes_no($p["has_previous_criminal_record"] ?? 0),
-    "previous_case_status" => $p["previous_case_status"] ?? "",
-    "height_cm" => $p["height_cm"] ?? "",
-    "weight_kg" => $p["weight_kg"] ?? "",
-    "built" => $p["built"] ?? "",
-    "eye_color" => $p["eye_color"] ?? "",
-    "eye_description" => $p["eye_description"] ?? "",
-    "hair_color" => $p["hair_color"] ?? "",
-    "hair_description" => $p["hair_description"] ?? "",
-    "under_influence" => $p["under_influence"] ?? "",
-    "under_influence_notes" => $p["under_influence_notes"] ?? "",
-    "guardian_name" => $p["guardian_name"] ?? "",
-    "guardian_address" => $p["guardian_address"] ?? "",
-    "guardian_home_phone" => $p["guardian_home_phone"] ?? "",
-    "guardian_mobile_phone" => $p["guardian_mobile_phone"] ?? "",
-    "full_name" => person_full_name($p)
+  $fields = [
+    "id", "incident_id", "person_role", "linked_user_id",
+    "family_name", "first_name", "middle_name", "qualifier", "nickname",
+    "citizenship", "sex_gender", "civil_status", "birth_date", "age",
+    "place_of_birth", "home_phone", "mobile_phone", "mobile_number",
+    "email_address", "current_address", "current_text", "current_sitio",
+    "current_barangay", "current_city", "current_province",
+    "other_address", "other_sitio", "other_barangay", "other_city",
+    "other_province", "educational_attainment", "occupation",
+    "work_address", "relation_to_victim", "is_afp_pnp_personnel",
+    "rank_title", "unit_assignment", "group_affiliation",
+    "has_previous_criminal_record", "previous_case_status",
+    "height_cm", "weight_kg", "built", "eye_color", "eye_description",
+    "hair_color", "hair_description", "under_influence",
+    "under_influence_notes", "guardian_name", "guardian_address",
+    "guardian_home_phone", "guardian_mobile_phone", "suspect_status",
+    "created_at"
   ];
+
+  $out = [];
+
+  foreach ($fields as $f) {
+    if ($f === "mobile_number") {
+      $out[$f] = $p["mobile_phone"] ?? "";
+    } elseif ($f === "current_text") {
+      $out[$f] = $p["current_address"] ?? "";
+    } elseif ($f === "has_previous_criminal_record" || $f === "is_afp_pnp_personnel") {
+      $out[$f] = yes_no($p[$f] ?? 0);
+    } else {
+      $out[$f] = $p[$f] ?? "";
+    }
+  }
+
+  $out["full_name"] = person_full_name($p);
+
+  return $out;
 }
 
 function officer_vars(?array $o): array {
   $o = $o ?: [];
 
   return [
+    "id" => $o["id"] ?? "",
+    "incident_id" => $o["incident_id"] ?? "",
     "officer_role" => $o["officer_role"] ?? "",
+    "user_id" => $o["user_id"] ?? "",
     "rank_title" => $o["rank_title"] ?? "",
     "full_name" => $o["full_name"] ?? "",
     "name_with_rank" => officer_full_name($o),
     "designation" => $o["designation"] ?? "",
     "police_station" => $o["police_station"] ?? "",
-    "mobile_phone" => $o["mobile_phone"] ?? ""
+    "mobile_phone" => $o["mobile_phone"] ?? "",
+    "signature_ref" => $o["signature_ref"] ?? "",
+    "created_at" => $o["created_at"] ?? ""
   ];
 }
 
@@ -171,7 +161,19 @@ function merge_prefixed_vars(array &$vars, string $prefix, array $data): void {
   }
 }
 
+function flatten_xml_text_runs(string $xml): string {
+  return preg_replace_callback(
+    '/(<w:t[^>]*>)(.*?)(<\/w:t>)/s',
+    function ($m) {
+      return $m[1] . str_replace(["\r", "\n"], "", $m[2]) . $m[3];
+    },
+    $xml
+  );
+}
+
 function replace_placeholders_in_xml(string $xml, array $vars): string {
+  $xml = flatten_xml_text_runs($xml);
+
   return preg_replace_callback('/\{\{\s*([^}]+?)\s*\}\}/u', function($m) use ($vars) {
     $key = trim($m[1]);
     return xml_safe($vars[$key] ?? "");
@@ -314,36 +316,69 @@ try {
   $place = trim($place, " ,");
 
   $vars = [
-    "id" => $incident["id"] ?? "",
-    "incident_code" => $incident["incident_code"] ?? "",
-    "irf_entry_number" => $incident["irf_entry_number"] ?? "",
-    "blotter_entry_number" => $incident["blotter_entry_number"] ?? "",
-    "incident_type" => $incident["incident_type"] ?? "",
-    "crime_category" => $incident["crime_category"] ?? "",
-    "title" => $incident["title"] ?? "",
-    "narrative" => $incident["narrative"] ?? "",
-    "date_reported" => fmt_dt($incident["date_reported"] ?? ""),
-    "date_incident_from" => fmt_dt($incident["date_incident_from"] ?? ""),
-    "date_incident_to" => fmt_dt($incident["date_incident_to"] ?? ""),
-    "place_of_incident" => $place,
-    "sitio" => $incident["sitio"] ?? "",
-    "barangay" => $incident["barangay"] ?? "",
-    "city_municipality" => $incident["city_municipality"] ?? "",
-    "province" => $incident["province"] ?? "",
-    "region" => $incident["region"] ?? "",
-    "case_status" => $incident["case_status"] ?? "",
-    "verification_status" => $incident["verification_status"] ?? "",
-    "incident_phase" => $incident["incident_phase"] ?? "",
-    "station_name" => $incident["station_name"] ?? ($AUTH_USER["station_name"] ?? ""),
-    "station_telephone" => $incident["contact_landline"] ?? "",
-    "station_mobile" => $incident["contact_mobile"] ?? "",
-    "station_chief" => $incident["contact_person"] ?? "",
-    "station_emergency_contact" => $incident["emergency_contact"] ?? "",
-    "investigator_on_case" => officer_full_name($investigator),
-    "investigator_mobile_phone" => $investigator["mobile_phone"] ?? "",
-    "desk_officer_name" => officer_full_name($deskOfficer),
-    "administering_officer_name" => officer_full_name($adminOfficer)
-  ];
+  "id" => $incident["id"] ?? "",
+  "incident_id" => $incident["id"] ?? "",
+  "incident_code" => $incident["incident_code"] ?? "",
+  "irf_entry_number" => $incident["irf_entry_number"] ?? "",
+  "blotter_entry_number" => $incident["blotter_entry_number"] ?? "",
+  "reporter_user_id" => $incident["reporter_user_id"] ?? "",
+  "report_source" => $incident["report_source"] ?? "",
+  "report_channel" => $incident["report_channel"] ?? "",
+  "crime_type_id" => $incident["crime_type_id"] ?? "",
+  "incident_type" => $incident["incident_type"] ?? "",
+  "crime_category" => $incident["crime_category"] ?? "",
+  "focus_crime_code" => $incident["focus_crime_code"] ?? "",
+  "ciras_offense_code" => $incident["ciras_offense_code"] ?? "",
+  "title" => $incident["title"] ?? "",
+  "narrative" => $incident["narrative"] ?? "",
+  "date_reported" => fmt_dt($incident["date_reported"] ?? ""),
+  "date_incident_from" => fmt_dt($incident["date_incident_from"] ?? ""),
+  "date_incident_to" => fmt_dt($incident["date_incident_to"] ?? ""),
+  "place_of_incident" => $place,
+  "sitio" => $incident["sitio"] ?? "",
+  "barangay" => $incident["barangay"] ?? "",
+  "city_municipality" => $incident["city_municipality"] ?? "",
+  "province" => $incident["province"] ?? "",
+  "region" => $incident["region"] ?? "",
+  "assigned_station_id" => $incident["assigned_station_id"] ?? "",
+  "lat" => $incident["lat"] ?? "",
+  "lng" => $incident["lng"] ?? "",
+  "accuracy_m" => $incident["accuracy_m"] ?? "",
+  "geohash" => $incident["geohash"] ?? "",
+  "location_type" => $incident["location_type"] ?? "",
+  "is_hotspot_related" => yes_no($incident["is_hotspot_related"] ?? 0),
+  "hotspot_id" => $incident["hotspot_id"] ?? "",
+  "risk_status" => $incident["risk_status"] ?? "",
+  "risk_distance_m" => $incident["risk_distance_m"] ?? "",
+  "risk_radius_m" => $incident["risk_radius_m"] ?? "",
+  "incident_phase" => $incident["incident_phase"] ?? "",
+  "verification_status" => $incident["verification_status"] ?? "",
+  "case_status" => $incident["case_status"] ?? "",
+  "has_known_suspect" => yes_no($incident["has_known_suspect"] ?? 0),
+  "suspect_count" => $incident["suspect_count"] ?? "",
+  "victim_count" => $incident["victim_count"] ?? "",
+  "witness_count" => $incident["witness_count"] ?? "",
+  "property_loss_flag" => yes_no($incident["property_loss_flag"] ?? 0),
+  "estimated_damage_value" => $incident["estimated_damage_value"] ?? "",
+  "device_time" => fmt_dt($incident["device_time"] ?? ""),
+  "created_at" => fmt_dt($incident["created_at"] ?? ""),
+  "updated_at" => fmt_dt($incident["updated_at"] ?? ""),
+  "reviewed_by" => $incident["reviewed_by"] ?? "",
+  "reviewed_at" => fmt_dt($incident["reviewed_at"] ?? ""),
+  "resolved_at" => fmt_dt($incident["resolved_at"] ?? ""),
+  "admin_notes" => $incident["admin_notes"] ?? "",
+  "severity_score" => $incident["severity_score"] ?? "",
+
+  "station_name" => $incident["station_name"] ?? ($AUTH_USER["station_name"] ?? ""),
+  "station_telephone" => $incident["contact_landline"] ?? "",
+  "station_mobile" => $incident["contact_mobile"] ?? "",
+  "station_chief" => $incident["contact_person"] ?? "",
+  "station_emergency_contact" => $incident["emergency_contact"] ?? "",
+  "investigator_on_case" => officer_full_name($investigator),
+  "investigator_mobile_phone" => $investigator["mobile_phone"] ?? "",
+  "desk_officer_name" => officer_full_name($deskOfficer),
+  "administering_officer_name" => officer_full_name($adminOfficer)
+];
 
   merge_prefixed_vars($vars, "*", person_vars($reportingPerson));
   merge_prefixed_vars($vars, "!", person_vars($suspect));
