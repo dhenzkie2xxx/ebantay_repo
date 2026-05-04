@@ -2,13 +2,24 @@
 require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/location_resolver.php";
 
+function out_error($code, $message, $debug = null) {
+  http_response_code($code);
+  header("Content-Type: application/json; charset=UTF-8");
+  echo json_encode([
+    "ok" => false,
+    "message" => $message,
+    "debug" => $debug
+  ]);
+  exit;
+}
+
 function norm_text($v): ?string {
   $v = trim((string)($v ?? ""));
   $v = preg_replace('/\s+/', ' ', $v);
   return $v === "" ? null : $v;
 }
 
-function xml_escape($v): string {
+function xml_safe($v): string {
   return htmlspecialchars((string)($v ?? ""), ENT_QUOTES | ENT_XML1, "UTF-8");
 }
 
@@ -19,10 +30,19 @@ function fmt_dt($v): string {
   return date("m/d/Y h:i A", $ts);
 }
 
+function yes_no($v): string {
+  return ((int)$v === 1) ? "Yes" : "No";
+}
+
 function current_admin_scope(PDO $pdo, array $AUTH_USER): array {
   $role = (string)($AUTH_USER["role"] ?? "");
+
   if ($role === "super_admin") {
-    return ["is_super_admin" => true, "province" => null, "city_municipality" => null];
+    return [
+      "is_super_admin" => true,
+      "province" => null,
+      "city_municipality" => null
+    ];
   }
 
   $canon = canonicalize_scope(
@@ -43,72 +63,131 @@ function current_admin_scope(PDO $pdo, array $AUTH_USER): array {
   ];
 }
 
-function p($text = "", $bold = false, $size = 22, $align = "left"): string {
-  $jc = $align !== "left" ? "<w:jc w:val=\"{$align}\"/>" : "";
-  $b = $bold ? "<w:b/>" : "";
-  return "
-    <w:p>
-      <w:pPr>{$jc}</w:pPr>
-      <w:r>
-        <w:rPr>{$b}<w:sz w:val=\"{$size}\"/></w:rPr>
-        <w:t xml:space=\"preserve\">" . xml_escape($text) . "</w:t>
-      </w:r>
-    </w:p>";
-}
-
-function cell($text, $bold = false, $width = 2400): string {
-  $b = $bold ? "<w:b/>" : "";
-  return "
-    <w:tc>
-      <w:tcPr><w:tcW w:w=\"{$width}\" w:type=\"dxa\"/></w:tcPr>
-      <w:p>
-        <w:r>
-          <w:rPr>{$b}<w:sz w:val=\"20\"/></w:rPr>
-          <w:t xml:space=\"preserve\">" . xml_escape($text) . "</w:t>
-        </w:r>
-      </w:p>
-    </w:tc>";
-}
-
-function row($cells): string {
-  return "<w:tr>" . implode("", $cells) . "</w:tr>";
-}
-
-function table($rows): string {
-  return "
-    <w:tbl>
-      <w:tblPr>
-        <w:tblW w:w=\"0\" w:type=\"auto\"/>
-        <w:tblBorders>
-          <w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>
-          <w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>
-          <w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>
-          <w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>
-          <w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>
-          <w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>
-        </w:tblBorders>
-      </w:tblPr>
-      " . implode("", $rows) . "
-    </w:tbl>";
-}
-
-function person_name($p): string {
-  if (!$p) return "";
-  return trim(($p["first_name"] ?? "") . " " . ($p["middle_name"] ?? "") . " " . ($p["family_name"] ?? ""));
-}
-
-function first_by_role($persons, $role) {
-  foreach ($persons as $p) {
-    if (strtoupper((string)$p["person_role"]) === $role) return $p;
+function first_by_role(array $rows, string $role): ?array {
+  foreach ($rows as $r) {
+    if (strtoupper((string)($r["person_role"] ?? "")) === strtoupper($role)) {
+      return $r;
+    }
   }
   return null;
 }
 
+function first_officer_by_role(array $rows, string $role): ?array {
+  foreach ($rows as $r) {
+    if (strtoupper((string)($r["officer_role"] ?? "")) === strtoupper($role)) {
+      return $r;
+    }
+  }
+  return null;
+}
+
+function person_full_name(?array $p): string {
+  if (!$p) return "";
+  return trim(
+    ($p["first_name"] ?? "") . " " .
+    ($p["middle_name"] ?? "") . " " .
+    ($p["family_name"] ?? "")
+  );
+}
+
+function officer_full_name(?array $o): string {
+  if (!$o) return "";
+  return trim(($o["rank_title"] ?? "") . " " . ($o["full_name"] ?? ""));
+}
+
+function person_vars(?array $p): array {
+  $p = $p ?: [];
+
+  return [
+    "family_name" => $p["family_name"] ?? "",
+    "first_name" => $p["first_name"] ?? "",
+    "middle_name" => $p["middle_name"] ?? "",
+    "qualifier" => $p["qualifier"] ?? "",
+    "nickname" => $p["nickname"] ?? "",
+    "citizenship" => $p["citizenship"] ?? "",
+    "sex_gender" => $p["sex_gender"] ?? "",
+    "civil_status" => $p["civil_status"] ?? "",
+    "birth_date" => $p["birth_date"] ?? "",
+    "age" => $p["age"] ?? "",
+    "place_of_birth" => $p["place_of_birth"] ?? "",
+    "home_phone" => $p["home_phone"] ?? "",
+    "mobile_phone" => $p["mobile_phone"] ?? "",
+    "mobile_number" => $p["mobile_phone"] ?? "",
+    "email_address" => $p["email_address"] ?? "",
+    "current_text" => $p["current_address"] ?? "",
+    "current_address" => $p["current_address"] ?? "",
+    "current_sitio" => $p["current_sitio"] ?? "",
+    "current_barangay" => $p["current_barangay"] ?? "",
+    "current_city" => $p["current_city"] ?? "",
+    "current_province" => $p["current_province"] ?? "",
+    "other_address" => $p["other_address"] ?? "",
+    "other_sitio" => $p["other_sitio"] ?? "",
+    "other_barangay" => $p["other_barangay"] ?? "",
+    "other_city" => $p["other_city"] ?? "",
+    "other_province" => $p["other_province"] ?? "",
+    "educational_attainment" => $p["educational_attainment"] ?? "",
+    "occupation" => $p["occupation"] ?? "",
+    "work_address" => $p["work_address"] ?? "",
+    "relation_to_victim" => $p["relation_to_victim"] ?? "",
+    "rank_title" => $p["rank_title"] ?? "",
+    "unit_assignment" => $p["unit_assignment"] ?? "",
+    "group_affiliation" => $p["group_affiliation"] ?? "",
+    "has_previous_criminal_record" => yes_no($p["has_previous_criminal_record"] ?? 0),
+    "previous_case_status" => $p["previous_case_status"] ?? "",
+    "height_cm" => $p["height_cm"] ?? "",
+    "weight_kg" => $p["weight_kg"] ?? "",
+    "built" => $p["built"] ?? "",
+    "eye_color" => $p["eye_color"] ?? "",
+    "eye_description" => $p["eye_description"] ?? "",
+    "hair_color" => $p["hair_color"] ?? "",
+    "hair_description" => $p["hair_description"] ?? "",
+    "under_influence" => $p["under_influence"] ?? "",
+    "under_influence_notes" => $p["under_influence_notes"] ?? "",
+    "guardian_name" => $p["guardian_name"] ?? "",
+    "guardian_address" => $p["guardian_address"] ?? "",
+    "guardian_home_phone" => $p["guardian_home_phone"] ?? "",
+    "guardian_mobile_phone" => $p["guardian_mobile_phone"] ?? "",
+    "full_name" => person_full_name($p)
+  ];
+}
+
+function officer_vars(?array $o): array {
+  $o = $o ?: [];
+
+  return [
+    "officer_role" => $o["officer_role"] ?? "",
+    "rank_title" => $o["rank_title"] ?? "",
+    "full_name" => $o["full_name"] ?? "",
+    "name_with_rank" => officer_full_name($o),
+    "designation" => $o["designation"] ?? "",
+    "police_station" => $o["police_station"] ?? "",
+    "mobile_phone" => $o["mobile_phone"] ?? ""
+  ];
+}
+
+function merge_prefixed_vars(array &$vars, string $prefix, array $data): void {
+  foreach ($data as $k => $v) {
+    $vars[$prefix . $k] = $v;
+  }
+}
+
+function replace_placeholders_in_xml(string $xml, array $vars): string {
+  return preg_replace_callback('/\{\{\s*([^}]+?)\s*\}\}/u', function($m) use ($vars) {
+    $key = trim($m[1]);
+    return xml_safe($vars[$key] ?? "");
+  }, $xml);
+}
+
 $id = (int)($_GET["id"] ?? 0);
+
 if ($id <= 0) {
-  http_response_code(400);
-  echo "Missing id";
-  exit;
+  out_error(400, "Missing id");
+}
+
+$templatePath = __DIR__ . "/Incident-Record-Form template.docx";
+
+if (!file_exists($templatePath)) {
+  out_error(500, "DOCX template not found", $templatePath);
 }
 
 try {
@@ -127,8 +206,15 @@ try {
   }
 
   $stmt = $pdo->prepare("
-    SELECT ir.*
+    SELECT
+      ir.*,
+      ps.station_name,
+      ps.contact_landline,
+      ps.contact_mobile,
+      ps.contact_person,
+      ps.emergency_contact
     FROM incident_reports ir
+    LEFT JOIN police_stations ps ON ps.id = ir.assigned_station_id
     WHERE ir.id = ?
     $scopeSql
     LIMIT 1
@@ -137,181 +223,198 @@ try {
   $incident = $stmt->fetch(PDO::FETCH_ASSOC);
 
   if (!$incident) {
-    http_response_code(404);
-    echo "Incident not found or outside your station city/municipality.";
-    exit;
+    out_error(404, "Incident not found or outside your station city/municipality.");
   }
 
-  $ps = $pdo->prepare("SELECT * FROM incident_persons WHERE incident_id = ? ORDER BY id ASC");
-  $ps->execute([$id]);
-  $persons = $ps->fetchAll(PDO::FETCH_ASSOC);
+  $personsStmt = $pdo->prepare("
+    SELECT *
+    FROM incident_persons
+    WHERE incident_id = ?
+    ORDER BY id ASC
+  ");
+  $personsStmt->execute([$id]);
+  $persons = $personsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-  $os = $pdo->prepare("SELECT * FROM incident_officers WHERE incident_id = ? ORDER BY id ASC");
-  $os->execute([$id]);
-  $officers = $os->fetchAll(PDO::FETCH_ASSOC);
+  $officersStmt = $pdo->prepare("
+    SELECT *
+    FROM incident_officers
+    WHERE incident_id = ?
+    ORDER BY id ASC
+  ");
+  $officersStmt->execute([$id]);
+  $officers = $officersStmt->fetchAll(PDO::FETCH_ASSOC);
 
-  $station = null;
-  if (!empty($incident["assigned_station_id"])) {
-    $ss = $pdo->prepare("SELECT * FROM police_stations WHERE id = ? LIMIT 1");
-    $ss->execute([(int)$incident["assigned_station_id"]]);
-    $station = $ss->fetch(PDO::FETCH_ASSOC);
+  /*
+    Reporter fallback from users + user_profiles if REPORTING_PERSON
+    was not manually added in incident_persons.
+  */
+  $reportingPerson = first_by_role($persons, "REPORTING_PERSON");
+
+  if (!$reportingPerson && !empty($incident["reporter_user_id"])) {
+    $userStmt = $pdo->prepare("
+      SELECT
+        u.firstname,
+        u.lastname,
+        u.email,
+        up.mobile_number,
+        up.address_text,
+        up.barangay,
+        up.city_municipality,
+        up.province
+      FROM users u
+      LEFT JOIN user_profiles up ON up.user_id = u.id
+      WHERE u.id = ?
+      LIMIT 1
+    ");
+    $userStmt->execute([(int)$incident["reporter_user_id"]]);
+    $u = $userStmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($u) {
+      $reportingPerson = [
+        "person_role" => "REPORTING_PERSON",
+        "family_name" => $u["lastname"] ?? "",
+        "first_name" => $u["firstname"] ?? "",
+        "middle_name" => "",
+        "email_address" => $u["email"] ?? "",
+        "mobile_phone" => $u["mobile_number"] ?? "",
+        "current_address" => $u["address_text"] ?? "",
+        "current_barangay" => $u["barangay"] ?? "",
+        "current_city" => $u["city_municipality"] ?? "",
+        "current_province" => $u["province"] ?? ""
+      ];
+    }
   }
 
-  $reporting = first_by_role($persons, "REPORTING_PERSON") ?: ($persons[0] ?? null);
-  $victim = first_by_role($persons, "VICTIM");
   $suspect = first_by_role($persons, "SUSPECT");
-  $deskOfficer = first_by_role($officers, "DESK_OFFICER") ?: ($officers[0] ?? null);
-  $investigator = first_by_role($officers, "DUTY_INVESTIGATOR") ?: ($officers[0] ?? null);
-  $adminOfficer = first_by_role($officers, "ADMINISTERING_OFFICER") ?: ($officers[0] ?? null);
+  $guardian = first_by_role($persons, "GUARDIAN");
+  $victim = first_by_role($persons, "VICTIM");
 
-  $body = "";
+  $adminOfficer =
+    first_officer_by_role($officers, "ADMINISTERING_OFFICER")
+    ?: first_officer_by_role($officers, "DUTY_INVESTIGATOR")
+    ?: ($officers[0] ?? null);
 
-  $body .= p("Philippine National Police", true, 24, "center");
-  $body .= p("INCIDENT RECORD FORM", true, 28, "center");
-  $body .= p("");
+  $deskOfficer =
+    first_officer_by_role($officers, "DESK_OFFICER")
+    ?: ($officers[0] ?? null);
 
-  $body .= table([
-    row([cell("IRF ENTRY NUMBER:", true), cell($incident["irf_entry_number"] ?? "", false, 5000)]),
-    row([cell("TYPE OF INCIDENT:", true), cell($incident["incident_type"] ?? "", false, 5000)]),
-    row([cell("COPY FOR:", true), cell("Police Station / Reporting Person", false, 5000)]),
-  ]);
+  $investigator =
+    first_officer_by_role($officers, "DUTY_INVESTIGATOR")
+    ?: first_officer_by_role($officers, "ASSISTING_OFFICER")
+    ?: ($officers[0] ?? null);
 
-  $body .= p("INSTRUCTIONS: Refer to PNP SOP on Recording of Incidents in the Police Blotter in filling up this form.", false, 18);
-  $body .= p("");
+  $place = trim(
+    ($incident["place_of_incident"] ?? "") . ", " .
+    ($incident["sitio"] ?? "") . ", " .
+    ($incident["barangay"] ?? "") . ", " .
+    ($incident["city_municipality"] ?? "") . ", " .
+    ($incident["province"] ?? "")
+  );
+  $place = preg_replace('/,\s*,/', ',', $place);
+  $place = trim($place, " ,");
 
-  $body .= table([
-    row([cell("DATE AND TIME REPORTED:", true), cell(fmt_dt($incident["date_reported"] ?? $incident["created_at"]), false, 5000)]),
-    row([cell("DATE AND TIME OF INCIDENT:", true), cell(fmt_dt($incident["date_incident_from"] ?? ""), false, 5000)]),
-    row([cell("PLACE OF INCIDENT:", true), cell(trim(($incident["place_of_incident"] ?? "") . ", " . ($incident["barangay"] ?? "") . ", " . ($incident["city_municipality"] ?? "") . ", " . ($incident["province"] ?? "")), false, 5000)]),
-  ]);
+  $vars = [
+    "id" => $incident["id"] ?? "",
+    "incident_code" => $incident["incident_code"] ?? "",
+    "irf_entry_number" => $incident["irf_entry_number"] ?? "",
+    "blotter_entry_number" => $incident["blotter_entry_number"] ?? "",
+    "incident_type" => $incident["incident_type"] ?? "",
+    "crime_category" => $incident["crime_category"] ?? "",
+    "title" => $incident["title"] ?? "",
+    "narrative" => $incident["narrative"] ?? "",
+    "date_reported" => fmt_dt($incident["date_reported"] ?? ""),
+    "date_incident_from" => fmt_dt($incident["date_incident_from"] ?? ""),
+    "date_incident_to" => fmt_dt($incident["date_incident_to"] ?? ""),
+    "place_of_incident" => $place,
+    "sitio" => $incident["sitio"] ?? "",
+    "barangay" => $incident["barangay"] ?? "",
+    "city_municipality" => $incident["city_municipality"] ?? "",
+    "province" => $incident["province"] ?? "",
+    "region" => $incident["region"] ?? "",
+    "case_status" => $incident["case_status"] ?? "",
+    "verification_status" => $incident["verification_status"] ?? "",
+    "incident_phase" => $incident["incident_phase"] ?? "",
+    "station_name" => $incident["station_name"] ?? ($AUTH_USER["station_name"] ?? ""),
+    "station_telephone" => $incident["contact_landline"] ?? "",
+    "station_mobile" => $incident["contact_mobile"] ?? "",
+    "station_chief" => $incident["contact_person"] ?? "",
+    "station_emergency_contact" => $incident["emergency_contact"] ?? "",
+    "investigator_on_case" => officer_full_name($investigator),
+    "investigator_mobile_phone" => $investigator["mobile_phone"] ?? "",
+    "desk_officer_name" => officer_full_name($deskOfficer),
+    "administering_officer_name" => officer_full_name($adminOfficer)
+  ];
 
-  $body .= p("ITEM “A” - REPORTING PERSON", true, 24);
-  $body .= table([
-    row([cell("FAMILY NAME", true), cell($reporting["family_name"] ?? ""), cell("FIRST NAME", true), cell($reporting["first_name"] ?? "")]),
-    row([cell("MIDDLE NAME", true), cell($reporting["middle_name"] ?? ""), cell("NICKNAME", true), cell($reporting["nickname"] ?? "")]),
-    row([cell("SEX/GENDER", true), cell($reporting["sex_gender"] ?? ""), cell("CIVIL STATUS", true), cell($reporting["civil_status"] ?? "")]),
-    row([cell("DATE OF BIRTH", true), cell($reporting["birth_date"] ?? ""), cell("AGE", true), cell($reporting["age"] ?? "")]),
-    row([cell("MOBILE PHONE", true), cell($reporting["mobile_phone"] ?? ""), cell("EMAIL ADDRESS", true), cell($reporting["email_address"] ?? "")]),
-    row([cell("CURRENT ADDRESS", true), cell($reporting["current_address"] ?? "", false, 5000), cell("BARANGAY", true), cell($reporting["current_barangay"] ?? "")]),
-    row([cell("TOWN/CITY", true), cell($reporting["current_city"] ?? ""), cell("PROVINCE", true), cell($reporting["current_province"] ?? "")]),
-    row([cell("OCCUPATION", true), cell($reporting["occupation"] ?? "", false, 5000)]),
-  ]);
+  merge_prefixed_vars($vars, "*", person_vars($reportingPerson));
+  merge_prefixed_vars($vars, "!", person_vars($suspect));
+  merge_prefixed_vars($vars, "~", person_vars($guardian));
+  merge_prefixed_vars($vars, "+", person_vars($victim));
+  merge_prefixed_vars($vars, "#", officer_vars($adminOfficer));
 
-  $body .= p("ITEM “B” – SUSPECT’S DATA", true, 24);
-  $body .= table([
-    row([cell("FAMILY NAME", true), cell($suspect["family_name"] ?? ""), cell("FIRST NAME", true), cell($suspect["first_name"] ?? "")]),
-    row([cell("MIDDLE NAME", true), cell($suspect["middle_name"] ?? ""), cell("NICKNAME", true), cell($suspect["nickname"] ?? "")]),
-    row([cell("SEX/GENDER", true), cell($suspect["sex_gender"] ?? ""), cell("CIVIL STATUS", true), cell($suspect["civil_status"] ?? "")]),
-    row([cell("DATE OF BIRTH", true), cell($suspect["birth_date"] ?? ""), cell("AGE", true), cell($suspect["age"] ?? "")]),
-    row([cell("MOBILE PHONE", true), cell($suspect["mobile_phone"] ?? ""), cell("EMAIL ADDRESS", true), cell($suspect["email_address"] ?? "")]),
-    row([cell("CURRENT ADDRESS", true), cell($suspect["current_address"] ?? "", false, 5000)]),
-    row([cell("RELATION TO VICTIM", true), cell($suspect["relation_to_victim"] ?? ""), cell("SUSPECT STATUS", true), cell($suspect["suspect_status"] ?? "")]),
-  ]);
+  /*
+    Template has one unprefixed {{hair_description}} placeholder.
+    Based on your symbol guide, this belongs to SUSPECT data.
+  */
+  $vars["hair_description"] = $suspect["hair_description"] ?? "";
 
-  $body .= p("ITEM “C” – VICTIM’S DATA", true, 24);
-  $body .= table([
-    row([cell("FAMILY NAME", true), cell($victim["family_name"] ?? ""), cell("FIRST NAME", true), cell($victim["first_name"] ?? "")]),
-    row([cell("MIDDLE NAME", true), cell($victim["middle_name"] ?? ""), cell("NICKNAME", true), cell($victim["nickname"] ?? "")]),
-    row([cell("SEX/GENDER", true), cell($victim["sex_gender"] ?? ""), cell("CIVIL STATUS", true), cell($victim["civil_status"] ?? "")]),
-    row([cell("DATE OF BIRTH", true), cell($victim["birth_date"] ?? ""), cell("AGE", true), cell($victim["age"] ?? "")]),
-    row([cell("MOBILE PHONE", true), cell($victim["mobile_phone"] ?? ""), cell("EMAIL ADDRESS", true), cell($victim["email_address"] ?? "")]),
-    row([cell("CURRENT ADDRESS", true), cell($victim["current_address"] ?? "", false, 5000)]),
-  ]);
+  $tmp = tempnam(sys_get_temp_dir(), "irf_template_");
+  if (!$tmp) {
+    throw new Exception("Unable to create temp file.");
+  }
 
-  $body .= p("ITEM “D” - NARRATIVE OF INCIDENT", true, 24);
-  $body .= table([
-    row([cell("TYPE OF INCIDENT", true), cell($incident["incident_type"] ?? "", false, 5000)]),
-    row([cell("DATE/TIME OF INCIDENT", true), cell(fmt_dt($incident["date_incident_from"] ?? ""), false, 5000)]),
-    row([cell("PLACE OF INCIDENT", true), cell(trim(($incident["place_of_incident"] ?? "") . ", " . ($incident["barangay"] ?? "") . ", " . ($incident["city_municipality"] ?? "") . ", " . ($incident["province"] ?? "")), false, 5000)]),
-  ]);
+  if (!copy($templatePath, $tmp)) {
+    throw new Exception("Unable to copy DOCX template.");
+  }
 
-  $body .= p("ENTER IN DETAIL THE NARRATIVE OF THE INCIDENT OR EVENT, ANSWERING THE WHO, WHAT, WHEN, WHERE, WHY AND HOW OF REPORTING.", true, 20);
-  $body .= p($incident["narrative"] ?? "", false, 22);
-  $body .= p("");
-  $body .= p("I HEREBY CERTIFY TO THE CORRECTNESS OF THE FOREGOING TO THE BEST OF MY KNOWLEDGE AND BELIEF.", true, 20);
-
-  $body .= table([
-    row([cell("NAME OF REPORTING PERSON", true), cell(person_name($reporting), false, 5000)]),
-    row([cell("SIGNATURE OF REPORTING PERSON", true), cell("", false, 5000)]),
-    row([cell("NAME OF ADMINISTERING OFFICER", true), cell(person_name($adminOfficer), false, 5000)]),
-    row([cell("SIGNATURE OF ADMINISTERING OFFICER", true), cell("", false, 5000)]),
-    row([cell("RANK, NAME AND DESIGNATION OF POLICE OFFICER", true), cell(trim(($investigator["rank_title"] ?? "") . " " . ($investigator["full_name"] ?? "") . " - " . ($investigator["designation"] ?? "")), false, 5000)]),
-    row([cell("INCIDENT RECORDED IN THE BLOTTER BY", true), cell(trim(($deskOfficer["rank_title"] ?? "") . " " . ($deskOfficer["full_name"] ?? "")), false, 5000)]),
-    row([cell("BLOTTER ENTRY NR", true), cell($incident["blotter_entry_number"] ?? "", false, 5000)]),
-  ]);
-
-  $body .= p("REMINDER TO REPORTING PERSON", true, 22);
-  $body .= p("Keep the copy of this Incident Record Form (IRF). An update of the progress of the investigation of the crime or incident that you reported will be given to you upon presentation of this IRF.", false, 18);
-
-  $body .= table([
-    row([cell("Name of Police Station", true), cell($station["station_name"] ?? ($AUTH_USER["station_name"] ?? ""), false, 5000)]),
-    row([cell("Telephone", true), cell($station["contact_landline"] ?? "", false, 5000)]),
-    row([cell("Investigator-on-Case", true), cell(person_name($investigator), false, 5000)]),
-    row([cell("Mobile Phone", true), cell($investigator["mobile_phone"] ?? ($station["contact_mobile"] ?? ""), false, 5000)]),
-    row([cell("Name of Chief/Head of Office", true), cell($station["contact_person"] ?? "", false, 5000)]),
-    row([cell("Mobile Phone", true), cell($station["emergency_contact"] ?? "", false, 5000)]),
-  ]);
-
-  $documentXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-  <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-    <w:body>
-      ' . $body . '
-      <w:sectPr>
-        <w:pgSz w:w="12240" w:h="15840"/>
-        <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/>
-      </w:sectPr>
-    </w:body>
-  </w:document>';
-
-  $contentTypes = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-  <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-    <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-    <Default Extension="xml" ContentType="application/xml"/>
-    <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-    <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-  </Types>';
-
-  $rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-  <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-  </Relationships>';
-
-  $styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-  <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-    <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
-      <w:name w:val="Normal"/>
-      <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="20"/></w:rPr>
-    </w:style>
-  </w:styles>';
-
-  $tmp = tempnam(sys_get_temp_dir(), "irf_");
   $zip = new ZipArchive();
 
-  if ($zip->open($tmp, ZipArchive::OVERWRITE) !== true) {
-    throw new Exception("Unable to create DOCX.");
+  if ($zip->open($tmp) !== true) {
+    throw new Exception("Unable to open DOCX template.");
   }
 
-  $zip->addFromString("[Content_Types].xml", $contentTypes);
-  $zip->addFromString("_rels/.rels", $rels);
-  $zip->addFromString("word/document.xml", $documentXml);
-  $zip->addFromString("word/styles.xml", $styles);
+  for ($i = 0; $i < $zip->numFiles; $i++) {
+    $name = $zip->getNameIndex($i);
+
+    /*
+      Replace placeholders in the main document, headers, footers,
+      footnotes, endnotes, and text-bearing Word XML files only.
+    */
+    if (
+      preg_match('/^word\/.*\.xml$/', $name) &&
+      !preg_match('/^word\/(styles|settings|numbering|fontTable|webSettings)\.xml$/', $name)
+    ) {
+      $xml = $zip->getFromName($name);
+      if ($xml !== false && str_contains($xml, "{{")) {
+        $xml = replace_placeholders_in_xml($xml, $vars);
+        $zip->addFromString($name, $xml);
+      }
+    }
+  }
+
   $zip->close();
 
-  $filename = "IRF-" . preg_replace('/[^A-Za-z0-9_-]/', "_", (string)($incident["irf_entry_number"] ?: $incident["incident_code"])) . ".docx";
+  $safeNameSource = $incident["irf_entry_number"] ?: ($incident["incident_code"] ?: ("incident-" . $id));
+  $safeName = preg_replace('/[^A-Za-z0-9_-]/', "_", (string)$safeNameSource);
+  $filename = "IRF-" . $safeName . ".docx";
+
+  while (ob_get_level()) {
+    ob_end_clean();
+  }
 
   header("Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-  header("Content-Disposition: attachment; filename=\"$filename\"");
+  header("Content-Disposition: attachment; filename=\"" . $filename . "\"");
   header("Content-Length: " . filesize($tmp));
+  header("Cache-Control: no-store, no-cache, must-revalidate");
+  header("Pragma: no-cache");
+
   readfile($tmp);
   unlink($tmp);
   exit;
 
 } catch (Throwable $e) {
-  http_response_code(500);
-  header("Content-Type: application/json; charset=UTF-8");
-  echo json_encode([
-    "ok" => false,
-    "message" => "DOCX export failed",
-    "debug" => $e->getMessage()
-  ]);
+  if (isset($tmp) && $tmp && file_exists($tmp)) {
+    @unlink($tmp);
+  }
+
+  out_error(500, "DOCX export failed", $e->getMessage());
 }
