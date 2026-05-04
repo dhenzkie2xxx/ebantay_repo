@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin_or_super_admin.php";
 require_once __DIR__ . "/user_flag_helpers.php";
+require_once __DIR__ . "/hotspot_lib.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -184,6 +185,7 @@ try {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   ");
+
   $historyStmt->execute([
     $id,
     $old["incident_phase"],
@@ -199,7 +201,11 @@ try {
   $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
   $oldVerification = strtoupper((string)($old["verification_status"] ?? ""));
 
-  if ($verificationStatus === "FALSE_REPORT" && $oldVerification !== "FALSE_REPORT" && $reporterUserId > 0) {
+  if (
+    $verificationStatus === "FALSE_REPORT" &&
+    $oldVerification !== "FALSE_REPORT" &&
+    $reporterUserId > 0
+  ) {
     flag_user_after_false_report(
       $pdo,
       $reporterUserId,
@@ -241,11 +247,25 @@ try {
     );
   }
 
+  /*
+    Auto hotspot detection:
+    Trigger when an incident becomes VERIFIED and is in a valid historical/active phase.
+  */
+  $hotspotResult = null;
+
+  if (
+    $verificationStatus === "VERIFIED" &&
+    in_array($incidentPhase, ["RESOLVED", "UNDER_INVESTIGATION", "BLOTTERED", "FILED_IN_COURT"], true)
+  ) {
+    $hotspotResult = recalc_hotspots_after_incident_save($pdo, $id);
+  }
+
   $pdo->commit();
 
   out(200, [
     "ok" => true,
     "message" => "Incident updated successfully",
+    "hotspot" => $hotspotResult,
     "scope" => [
       "role" => $role,
       "station_id" => $role === "admin" ? $stationId : null,
