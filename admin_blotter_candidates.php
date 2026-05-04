@@ -46,6 +46,7 @@ $params = [];
 if ($mode === "NEW") {
   $where .= "
     AND verification_status = 'VERIFIED'
+    AND case_status = 'RESOLVED'
     AND (blotter_entry_number IS NULL OR blotter_entry_number = '')
   ";
 } elseif ($mode === "BLOTTERED") {
@@ -55,6 +56,7 @@ if ($mode === "NEW") {
     AND (
       (
         verification_status = 'VERIFIED'
+        AND case_status = 'RESOLVED'
         AND (blotter_entry_number IS NULL OR blotter_entry_number = '')
       )
       OR incident_phase = 'BLOTTERED'
