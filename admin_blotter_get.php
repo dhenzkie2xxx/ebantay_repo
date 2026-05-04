@@ -120,29 +120,13 @@ $personsStmt->execute([$id]);
 $persons = $personsStmt->fetchAll(PDO::FETCH_ASSOC);
 
 /*
-  Auto-fill Reporting Person from reporter account/profile
-  only when no REPORTING_PERSON row exists yet.
+  Auto-fill / merge Reporting Person data from reporter account/profile.
+  If REPORTING_PERSON already exists, only blank fields will be filled.
+  If no REPORTING_PERSON exists, a temporary one is added to the response.
 */
-$hasReportingPerson = false;
+$reporterProfile = null;
 
-foreach ($persons as $p) {
-  if (strtoupper((string)($p["person_role"] ?? "")) === "REPORTING_PERSON") {
-    $hasName =
-      trim((string)($p["first_name"] ?? "")) !== "" ||
-      trim((string)($p["family_name"] ?? "")) !== "";
-
-    $hasContact =
-      trim((string)($p["mobile_phone"] ?? "")) !== "" ||
-      trim((string)($p["current_address"] ?? "")) !== "";
-
-    if ($hasName || $hasContact) {
-      $hasReportingPerson = true;
-      break;
-    }
-  }
-}
-
-if (!$hasReportingPerson && !empty($row["reporter_user_id"])) {
+if (!empty($row["reporter_user_id"])) {
   $userStmt = $pdo->prepare("
     SELECT
       u.firstname,
@@ -160,77 +144,121 @@ if (!$hasReportingPerson && !empty($row["reporter_user_id"])) {
   ");
 
   $userStmt->execute([(int)$row["reporter_user_id"]]);
-  $u = $userStmt->fetch(PDO::FETCH_ASSOC);
+  $reporterProfile = $userStmt->fetch(PDO::FETCH_ASSOC);
+}
 
-  if ($u) {
-    array_unshift($persons, [
-      "id" => 0,
-      "incident_id" => $row["id"],
-      "person_role" => "REPORTING_PERSON",
-      "linked_user_id" => $row["reporter_user_id"],
+$hasReportingPerson = false;
 
-      "family_name" => $u["lastname"] ?? "",
-      "first_name" => $u["firstname"] ?? "",
-      "middle_name" => "",
-      "qualifier" => "",
-      "nickname" => "",
+foreach ($persons as $idx => $p) {
+  if (strtoupper((string)($p["person_role"] ?? "")) === "REPORTING_PERSON") {
+    $hasReportingPerson = true;
 
-      "citizenship" => "",
-      "sex_gender" => "",
-      "civil_status" => "",
-      "birth_date" => null,
-      "age" => null,
-      "place_of_birth" => "",
+    if ($reporterProfile) {
+      if (trim((string)($persons[$idx]["family_name"] ?? "")) === "") {
+        $persons[$idx]["family_name"] = $reporterProfile["lastname"] ?? "";
+      }
 
-      "home_phone" => "",
-      "mobile_phone" => $u["mobile_number"] ?? "",
-      "email_address" => $u["email"] ?? "",
+      if (trim((string)($persons[$idx]["first_name"] ?? "")) === "") {
+        $persons[$idx]["first_name"] = $reporterProfile["firstname"] ?? "";
+      }
 
-      "current_address" => $u["address_text"] ?? "",
-      "current_sitio" => "",
-      "current_barangay" => $u["barangay"] ?? "",
-      "current_city" => $u["city_municipality"] ?? "",
-      "current_province" => $u["province"] ?? "",
+      if (trim((string)($persons[$idx]["email_address"] ?? "")) === "") {
+        $persons[$idx]["email_address"] = $reporterProfile["email"] ?? "";
+      }
 
-      "other_address" => "",
-      "other_sitio" => "",
-      "other_barangay" => "",
-      "other_city" => "",
-      "other_province" => "",
+      if (trim((string)($persons[$idx]["mobile_phone"] ?? "")) === "") {
+        $persons[$idx]["mobile_phone"] = $reporterProfile["mobile_number"] ?? "";
+      }
 
-      "educational_attainment" => "",
-      "occupation" => "",
-      "work_address" => "",
-      "relation_to_victim" => "",
+      if (trim((string)($persons[$idx]["current_address"] ?? "")) === "") {
+        $persons[$idx]["current_address"] = $reporterProfile["address_text"] ?? "";
+      }
 
-      "is_afp_pnp_personnel" => 0,
-      "rank_title" => "",
-      "unit_assignment" => "",
-      "group_affiliation" => "",
+      if (trim((string)($persons[$idx]["current_barangay"] ?? "")) === "") {
+        $persons[$idx]["current_barangay"] = $reporterProfile["barangay"] ?? "";
+      }
 
-      "has_previous_criminal_record" => 0,
-      "previous_case_status" => "",
+      if (trim((string)($persons[$idx]["current_city"] ?? "")) === "") {
+        $persons[$idx]["current_city"] = $reporterProfile["city_municipality"] ?? "";
+      }
 
-      "height_cm" => null,
-      "weight_kg" => null,
-      "built" => "",
-      "eye_color" => "",
-      "eye_description" => "",
-      "hair_color" => "",
-      "hair_description" => "",
+      if (trim((string)($persons[$idx]["current_province"] ?? "")) === "") {
+        $persons[$idx]["current_province"] = $reporterProfile["province"] ?? "";
+      }
+    }
 
-      "under_influence" => "",
-      "under_influence_notes" => "",
-
-      "guardian_name" => "",
-      "guardian_address" => "",
-      "guardian_home_phone" => "",
-      "guardian_mobile_phone" => "",
-
-      "suspect_status" => "UNKNOWN",
-      "created_at" => null
-    ]);
+    break;
   }
+}
+
+if (!$hasReportingPerson && $reporterProfile) {
+  array_unshift($persons, [
+    "id" => 0,
+    "incident_id" => $row["id"],
+    "person_role" => "REPORTING_PERSON",
+    "linked_user_id" => $row["reporter_user_id"],
+
+    "family_name" => $reporterProfile["lastname"] ?? "",
+    "first_name" => $reporterProfile["firstname"] ?? "",
+    "middle_name" => "",
+    "qualifier" => "",
+    "nickname" => "",
+
+    "citizenship" => "",
+    "sex_gender" => "",
+    "civil_status" => "",
+    "birth_date" => null,
+    "age" => null,
+    "place_of_birth" => "",
+
+    "home_phone" => "",
+    "mobile_phone" => $reporterProfile["mobile_number"] ?? "",
+    "email_address" => $reporterProfile["email"] ?? "",
+
+    "current_address" => $reporterProfile["address_text"] ?? "",
+    "current_sitio" => "",
+    "current_barangay" => $reporterProfile["barangay"] ?? "",
+    "current_city" => $reporterProfile["city_municipality"] ?? "",
+    "current_province" => $reporterProfile["province"] ?? "",
+
+    "other_address" => "",
+    "other_sitio" => "",
+    "other_barangay" => "",
+    "other_city" => "",
+    "other_province" => "",
+
+    "educational_attainment" => "",
+    "occupation" => "",
+    "work_address" => "",
+    "relation_to_victim" => "",
+
+    "is_afp_pnp_personnel" => 0,
+    "rank_title" => "",
+    "unit_assignment" => "",
+    "group_affiliation" => "",
+
+    "has_previous_criminal_record" => 0,
+    "previous_case_status" => "",
+
+    "height_cm" => null,
+    "weight_kg" => null,
+    "built" => "",
+    "eye_color" => "",
+    "eye_description" => "",
+    "hair_color" => "",
+    "hair_description" => "",
+
+    "under_influence" => "",
+    "under_influence_notes" => "",
+
+    "guardian_name" => "",
+    "guardian_address" => "",
+    "guardian_home_phone" => "",
+    "guardian_mobile_phone" => "",
+
+    "suspect_status" => "UNKNOWN",
+    "created_at" => null
+  ]);
 }
 
 $propertiesStmt = $pdo->prepare("
@@ -296,8 +324,6 @@ echo json_encode([
     "date_reported" => $row["date_reported"],
     "created_at" => $row["created_at"]
   ],
-  "debug_reporter_user_id" => $row["reporter_user_id"] ?? null,
-  "debug_has_reporting_person" => $hasReportingPerson,
   "persons" => array_map(function($r) {
     return [
       "id" => (int)($r["id"] ?? 0),
