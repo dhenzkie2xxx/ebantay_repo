@@ -161,21 +161,18 @@ function merge_prefixed_vars(array &$vars, string $prefix, array $data): void {
   }
 }
 
-function flatten_xml_text_runs(string $xml): string {
-  return preg_replace_callback(
-    '/(<w:t[^>]*>)(.*?)(<\/w:t>)/s',
-    function ($m) {
-      return $m[1] . str_replace(["\r", "\n"], "", $m[2]) . $m[3];
-    },
-    $xml
-  );
-}
-
 function replace_placeholders_in_xml(string $xml, array $vars): string {
-  $xml = flatten_xml_text_runs($xml);
+  return preg_replace_callback('/\{\{.*?\}\}/su', function ($m) use ($vars) {
+    $raw = $m[0];
 
-  return preg_replace_callback('/\{\{\s*([^}]+?)\s*\}\}/u', function($m) use ($vars) {
-    $key = trim($m[1]);
+    // Handles placeholders split by Word XML runs:
+    // {{*family</w:t><w:t>_name}}
+    $key = strip_tags($raw);
+    $key = html_entity_decode($key, ENT_QUOTES | ENT_XML1, "UTF-8");
+    $key = str_replace(["{{", "}}"], "", $key);
+    $key = preg_replace('/\s+/', '', $key);
+    $key = trim($key);
+
     return xml_safe($vars[$key] ?? "");
   }, $xml);
 }
