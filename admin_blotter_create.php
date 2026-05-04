@@ -42,7 +42,7 @@ $persons = $data["persons"] ?? [];
 $properties = $data["properties"] ?? [];
 $officers = $data["officers"] ?? [];
 
-$allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
+$allowedCase = ["OPEN", "RESOLVED", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
 $allowedSources = ["walk_in", "hotline", "police_encoder", "other"];
 $allowedChannels = ["station", "phone", "radio", "other"];
 $allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
