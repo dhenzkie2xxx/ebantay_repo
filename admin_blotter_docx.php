@@ -381,7 +381,10 @@ try {
 
   merge_prefixed_vars($vars, "*", person_vars($reportingPerson));
   merge_prefixed_vars($vars, "!", person_vars($suspect));
-  merge_prefixed_vars($vars, "~", person_vars($guardian));
+  
+  $guardianSource = $guardian ?: $suspect;
+  merge_prefixed_vars($vars, "~", person_vars($guardianSource));
+  
   merge_prefixed_vars($vars, "+", person_vars($victim));
   merge_prefixed_vars($vars, "#", officer_vars($adminOfficer));
 
