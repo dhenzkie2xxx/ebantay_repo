@@ -127,8 +127,18 @@ $hasReportingPerson = false;
 
 foreach ($persons as $p) {
   if (strtoupper((string)($p["person_role"] ?? "")) === "REPORTING_PERSON") {
-    $hasReportingPerson = true;
-    break;
+    $hasName =
+      trim((string)($p["first_name"] ?? "")) !== "" ||
+      trim((string)($p["family_name"] ?? "")) !== "";
+
+    $hasContact =
+      trim((string)($p["mobile_phone"] ?? "")) !== "" ||
+      trim((string)($p["current_address"] ?? "")) !== "";
+
+    if ($hasName || $hasContact) {
+      $hasReportingPerson = true;
+      break;
+    }
   }
 }
 
@@ -286,6 +296,8 @@ echo json_encode([
     "date_reported" => $row["date_reported"],
     "created_at" => $row["created_at"]
   ],
+  "debug_reporter_user_id" => $row["reporter_user_id"] ?? null,
+  "debug_has_reporting_person" => $hasReportingPerson,
   "persons" => array_map(function($r) {
     return [
       "id" => (int)($r["id"] ?? 0),
