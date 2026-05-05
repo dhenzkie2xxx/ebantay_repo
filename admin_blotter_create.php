@@ -3,6 +3,7 @@ require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/hotspot_lib.php";
 require_once __DIR__ . "/location_resolver.php";
 require_once __DIR__ . "/audit_log_helper.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -536,6 +537,41 @@ try {
     "Station blotter created via {$reportSource}/{$reportChannel}. " . $notes,
     $adminId
   ]);
+
+  write_audit_log(
+  $pdo,
+  $AUTH_USER,
+  "BLOTTER_CREATED",
+  "incident_report",
+  $incidentId,
+  "Station Admin created a blotter record.",
+  [
+    "module" => "blotter",
+    "incident_id" => $incidentId,
+    "new_values" => [
+      "incident_code" => $incidentCode,
+      "blotter_entry_number" => $blotterEntryNumber,
+      "irf_entry_number" => $irfEntryNumber,
+      "title" => $title,
+      "incident_type" => $crime["crime_name"],
+      "crime_category" => $crime["crime_category"],
+      "report_source" => $reportSource,
+      "report_channel" => $reportChannel,
+      "incident_phase" => "BLOTTERED",
+      "verification_status" => "VERIFIED",
+      "case_status" => $caseStatus,
+      "barangay" => $barangay,
+      "city_municipality" => $cityMunicipality,
+      "province" => $province,
+      "lat" => $lat,
+      "lng" => $lng,
+      "persons_count" => is_array($persons) ? count($persons) : 0,
+      "properties_count" => is_array($properties) ? count($properties) : 0,
+      "officers_count" => is_array($officers) ? count($officers) : 0,
+      "reviewed_by" => $adminId
+    ]
+  ]
+);
 
   recalc_hotspots_after_incident_save($pdo, $incidentId);
   $alertResult = queue_incident_hotspot_alerts($pdo, $incidentId);

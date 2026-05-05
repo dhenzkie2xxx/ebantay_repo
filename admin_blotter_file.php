@@ -2,6 +2,7 @@
 require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/hotspot_lib.php";
 require_once __DIR__ . "/location_resolver.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -577,6 +578,44 @@ try {
     "Blotter filed. " . $notes,
     $adminId
   ]);
+
+  write_audit_log(
+  $pdo,
+  $AUTH_USER,
+  "BLOTTER_FILED",
+  "incident_report",
+  $incidentId,
+  "Station Admin filed an incident report into blotter.",
+  [
+    "module" => "blotter",
+    "incident_id" => $incidentId,
+    "old_values" => [
+      "incident_phase" => $old["incident_phase"],
+      "case_status" => $old["case_status"],
+      "verification_status" => $old["verification_status"],
+      "report_source" => $old["report_source"],
+      "report_channel" => $old["report_channel"],
+      "blotter_entry_number" => $old["blotter_entry_number"],
+      "irf_entry_number" => $old["irf_entry_number"]
+    ],
+    "new_values" => [
+      "blotter_entry_number" => $blotterEntryNumber,
+      "irf_entry_number" => $irfEntryNumber,
+      "report_source" => $reportSource,
+      "report_channel" => $reportChannel,
+      "incident_type" => $crime["crime_name"],
+      "crime_category" => $crime["crime_category"],
+      "title" => $title,
+      "incident_phase" => "BLOTTERED",
+      "case_status" => $caseStatus,
+      "verification_status" => $old["verification_status"],
+      "persons_count" => is_array($persons) ? count($persons) : 0,
+      "properties_count" => is_array($properties) ? count($properties) : 0,
+      "officers_count" => is_array($officers) ? count($officers) : 0,
+      "reviewed_by" => $adminId
+    ]
+  ]
+);
 
   $hotspotDebug = null;
   $alertDebug = null;
