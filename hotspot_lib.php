@@ -68,25 +68,35 @@ function hotspot_compute_color($incidentCount, $panicCount, $severityScoreTotal 
   $severityScoreTotal = (float)$severityScoreTotal;
   $maxCrimeWeight = (float)$maxCrimeWeight;
 
-  // Severe single-crime hotspot trigger, e.g., murder, robbery, rape.
-  if ($maxCrimeWeight >= 8) return "red";
+  /*
+    Weighted hotspot risk scoring:
+    - Incident count = frequency/density factor
+    - Severity total = accumulated crime severity
+    - Max crime weight = high-impact crime boost
+    - Panic count = emergency signal boost
+  */
+  $score =
+    ($incidentCount * 1.5) +
+    ($severityScoreTotal * 1.8) +
+    ($maxCrimeWeight * 2.2) +
+    ($panicCount * 12);
 
-  // Strong aggregate severity or active panic trigger.
-  if ($severityScoreTotal >= 15 || $panicCount >= 1) return "red";
-
-  // Moderate aggregate severity or multiple low/moderate crimes.
-  if ($severityScoreTotal >= 8 || $incidentCount >= 2) return "orange";
-
-  // One low-severity verified crime is monitored but not high-risk.
+  if ($score >= 55) return "red";
+  if ($score >= 30) return "orange";
+  if ($score >= 15) return "yellow";
   if ($incidentCount >= 1) return "green";
 
   return "none";
 }
 
 function hotspot_compute_risk_level($color) {
+  $color = strtolower(trim((string)$color));
+
   if ($color === "red") return "HIGH";
   if ($color === "orange") return "MEDIUM";
+  if ($color === "yellow") return "LOW";
   if ($color === "green") return "LOW";
+
   return "LOW";
 }
 
@@ -447,7 +457,7 @@ function get_computed_hotspots(
   }
 
   usort($out, function ($a, $b) {
-    $rank = ["red" => 4, "orange" => 3, "green" => 2, "none" => 1];
+    $rank = ["red" => 5, "orange" => 4, "yellow" => 3, "green" => 2, "none" => 1];
     $ra = $rank[$a["highlight_color"]] ?? 0;
     $rb = $rank[$b["highlight_color"]] ?? 0;
     if ($ra !== $rb) return $rb <=> $ra;
