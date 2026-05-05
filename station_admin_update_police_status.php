@@ -65,8 +65,21 @@ try {
     ]);
   }
 
+  $policeUserId = (int)$policeUserId;
+
   $stmt = $pdo->prepare("
-    SELECT id, station_id, role
+    SELECT
+      id,
+      firstname,
+      lastname,
+      username,
+      email,
+      station_id,
+      role,
+      account_status,
+      valid,
+      duty_status,
+      last_seen_at
     FROM users
     WHERE id = ?
       AND role = 'police_on_field'
@@ -74,7 +87,7 @@ try {
     LIMIT 1
   ");
   $stmt->execute([
-    (int)$policeUserId,
+    $policeUserId,
     (int)$admin["station_id"]
   ]);
 
@@ -96,6 +109,11 @@ try {
       WHERE id = ?
         AND role = 'police_on_field'
     ");
+
+    $newValues = [
+      "account_status" => "disabled",
+      "duty_status" => "offline"
+    ];
   } else {
     $update = $pdo->prepare("
       UPDATE users
@@ -106,21 +124,30 @@ try {
       WHERE id = ?
         AND role = 'police_on_field'
     ");
+
+    $newValues = [
+      "account_status" => "active",
+      "valid" => "valid",
+      "duty_status" => "offline"
+    ];
   }
 
-    $update->execute([(int)$policeUserId]);
+  $update->execute([$policeUserId]);
 
   write_audit_log(
     $pdo,
     $admin,
     $action === "disable" ? "POLICE_ACCOUNT_DISABLED" : "POLICE_ACCOUNT_ENABLED",
     "user",
-    (int)$policeUserId,
+    $policeUserId,
     $action === "disable"
       ? "Station Admin disabled a Police on Field account."
       : "Station Admin enabled a Police on Field account.",
     [
-      "target_user_id" => (int)$policeUserId
+      "module" => "police_on_field",
+      "target_user_id" => $policeUserId,
+      "old_values" => $police,
+      "new_values" => $newValues
     ]
   );
 
@@ -129,7 +156,7 @@ try {
     "message" => $action === "disable"
       ? "Police on Field account disabled."
       : "Police on Field account enabled.",
-    "police_user_id" => (int)$policeUserId,
+    "police_user_id" => $policeUserId,
     "action" => $action
   ]);
 

@@ -2,6 +2,7 @@
 require_once __DIR__ . "/require_admin_or_super_admin.php";
 require_once __DIR__ . "/user_flag_helpers.php";
 require_once __DIR__ . "/hotspot_lib.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -109,7 +110,10 @@ try {
       verification_status,
       incident_phase,
       case_status,
+      admin_notes,
+      reviewed_by,
       reviewed_at,
+      resolved_at,
       province,
       assigned_station_id
     FROM incident_reports
@@ -214,26 +218,31 @@ try {
     );
   }
 
-  if (
-    $reporterUserId > 0 &&
-    (
-      $oldVerification !== $verificationStatus ||
-      strtoupper((string)$old["incident_phase"]) !== $incidentPhase ||
-      strtoupper((string)$old["case_status"]) !== $caseStatus
-    )
-  ) {
+  $changed =
+    $oldVerification !== $verificationStatus ||
+    strtoupper((string)$old["incident_phase"]) !== $incidentPhase ||
+    strtoupper((string)$old["case_status"]) !== $caseStatus;
+
+  if ($reporterUserId > 0 && $changed) {
     $incidentTitle = trim((string)($old["title"] ?? ""));
-    if ($incidentTitle === "") $incidentTitle = "Untitled Incident";
+    if ($incidentTitle === "") {
+      $incidentTitle = "Untitled Incident";
+    }
 
     $title = "Incident Report Update";
     $message = "Your reported incident \"{$incidentTitle}\" was updated. Verification: {$verificationStatus}, Phase: {$incidentPhase}, Case: {$caseStatus}.";
+
     if ($notes !== "") {
       $message .= " Admin note: {$notes}";
     }
 
     $severity = "MEDIUM";
-    if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") $severity = "LOW";
-    if ($verificationStatus === "FALSE_REPORT" || $incidentPhase === "REJECTED") $severity = "HIGH";
+    if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") {
+      $severity = "LOW";
+    }
+    if ($verificationStatus === "FALSE_REPORT" || $incidentPhase === "REJECTED") {
+      $severity = "HIGH";
+    }
 
     queue_user_notification(
       $pdo,
@@ -247,34 +256,69 @@ try {
     );
   }
 
-  /*
-    Auto hotspot detection:
-    Trigger when an incident becomes VERIFIED and is in a valid historical/active phase.
-  */
-  $hotspotResult = null;
+  hotspot_refresh_incident_link($pdo, $id);
+  hotspot_deactivate_orphan_hotspots($pdo);
 
-  if (
-    $verificationStatus === "VERIFIED" &&
-    in_array($incidentPhase, ["RESOLVED", "UNDER_INVESTIGATION", "BLOTTERED", "FILED_IN_COURT"], true)
-  ) {
-    $hotspotResult = recalc_hotspots_after_incident_save($pdo, $id);
+  $newValues = [
+    "verification_status" => $verificationStatus,
+    "incident_phase" => $incidentPhase,
+    "case_status" => $caseStatus,
+    "admin_notes" => $notes,
+    "reviewed_by" => $adminId,
+    "reviewed_at" => ($verificationStatus === "VERIFIED" && empty($old["reviewed_at"])) ? $now : $old["reviewed_at"],
+    "resolved_at" => ($incidentPhase === "RESOLVED") ? $now : $old["resolved_at"]
+  ];
+
+  $auditAction = "INCIDENT_UPDATED";
+
+  if ($verificationStatus === "VERIFIED") {
+    $auditAction = "INCIDENT_VERIFIED";
   }
+
+  if ($verificationStatus === "FALSE_REPORT") {
+    $auditAction = "INCIDENT_FALSE_REPORT_MARKED";
+  }
+
+  if ($verificationStatus === "DUPLICATE") {
+    $auditAction = "INCIDENT_DUPLICATE_MARKED";
+  }
+
+  if ($incidentPhase === "REJECTED") {
+    $auditAction = "INCIDENT_REJECTED";
+  }
+
+  if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") {
+    $auditAction = "INCIDENT_RESOLVED";
+  }
+
+  write_audit_log(
+    $pdo,
+    $AUTH_USER,
+    $auditAction,
+    "incident_report",
+    $id,
+    "Station Admin updated an incident report status.",
+    [
+      "module" => "incident_reports",
+      "incident_id" => $id,
+      "target_user_id" => $reporterUserId > 0 ? $reporterUserId : null,
+      "old_values" => $old,
+      "new_values" => $newValues
+    ]
+  );
 
   $pdo->commit();
 
   out(200, [
     "ok" => true,
     "message" => "Incident updated successfully",
-    "hotspot" => $hotspotResult,
-    "scope" => [
-      "role" => $role,
-      "station_id" => $role === "admin" ? $stationId : null,
-      "assigned_station_id" => $old["assigned_station_id"] !== null ? (int)$old["assigned_station_id"] : null,
-      "incident_province" => $old["province"] ?? null
-    ]
+    "incident_id" => $id
   ]);
+
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
 
   out(500, [
     "ok" => false,

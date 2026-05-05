@@ -2,6 +2,7 @@
 require_once __DIR__ . "/cors.php";
 require_once __DIR__ . "/db.php";
 require_once __DIR__ . "/auth_helpers.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=utf-8");
 
@@ -21,6 +22,32 @@ if ($username === "" || $password === "") {
   http_response_code(400);
   echo json_encode(["ok" => false, "message" => "Fill required credentials"]);
   exit;
+}
+
+function audit_successful_login(PDO $pdo, array $user): void {
+  if (!in_array($user["role"], ["admin", "police_on_field", "super_admin"], true)) {
+    return;
+  }
+
+  write_audit_log(
+    $pdo,
+    $user,
+    "LOGIN",
+    "user_session",
+    (int)$user["id"],
+    "User logged in.",
+    [
+      "module" => "auth",
+      "target_user_id" => (int)$user["id"],
+      "new_values" => [
+        "user_id" => (int)$user["id"],
+        "username" => $user["username"] ?? null,
+        "role" => $user["role"] ?? null,
+        "station_id" => $user["station_id"] ?? null,
+        "station_name" => $user["station_name"] ?? null
+      ]
+    ]
+  );
 }
 
 try {
@@ -173,6 +200,8 @@ try {
       $message = "Your police station is not approved yet.";
     }
 
+    audit_successful_login($pdo, $user);
+
     echo json_encode([
       "ok" => true,
       "message" => $message,
@@ -244,6 +273,8 @@ try {
       exit;
     }
 
+    audit_successful_login($pdo, $user);
+
     echo json_encode([
       "ok" => true,
       "message" => "Login successful",
@@ -263,6 +294,8 @@ try {
     exit;
   }
 
+  audit_successful_login($pdo, $user);
+
   echo json_encode([
     "ok" => true,
     "message" => "Login successful",
@@ -279,6 +312,7 @@ try {
       "account_status" => $user["account_status"] ?? null
     ], auth_station_scope($user))
   ]);
+
 } catch (Throwable $e) {
   http_response_code(500);
   echo json_encode([

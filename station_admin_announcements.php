@@ -151,6 +151,19 @@ try {
 
     $announcementId = (int)$pdo->lastInsertId();
 
+    $newValues = [
+      "id" => $announcementId,
+      "station_id" => $stationId,
+      "created_by" => (int)$admin["id"],
+      "title" => $title,
+      "message" => $message,
+      "region" => $region,
+      "province" => $province,
+      "city_municipality" => $cityMunicipality,
+      "status" => $status,
+      "priority" => $priority
+    ];
+
     write_audit_log(
       $pdo,
       $admin,
@@ -158,7 +171,11 @@ try {
       "community_announcement",
       $announcementId,
       "Station Admin created a community announcement.",
-      []
+      [
+        "module" => "announcements",
+        "old_values" => null,
+        "new_values" => $newValues
+      ]
     );
 
     out(200, [

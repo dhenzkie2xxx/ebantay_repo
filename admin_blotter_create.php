@@ -2,6 +2,7 @@
 require_once __DIR__ . "/require_admin.php";
 require_once __DIR__ . "/hotspot_lib.php";
 require_once __DIR__ . "/location_resolver.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -38,17 +39,17 @@ $caseStatus = strtoupper(trim((string)($data["case_status"] ?? "OPEN")));
 $lat = isset($data["lat"]) && $data["lat"] !== "" ? (float)$data["lat"] : null;
 $lng = isset($data["lng"]) && $data["lng"] !== "" ? (float)$data["lng"] : null;
 
-$persons = $data["persons"] ?? [];
-$properties = $data["properties"] ?? [];
-$officers = $data["officers"] ?? [];
+$persons = is_array($data["persons"] ?? null) ? $data["persons"] : [];
+$properties = is_array($data["properties"] ?? null) ? $data["properties"] : [];
+$officers = is_array($data["officers"] ?? null) ? $data["officers"] : [];
 
 $allowedCase = ["OPEN", "RESOLVED", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
 $allowedSources = ["walk_in", "hotline", "police_encoder", "other"];
 $allowedChannels = ["station", "phone", "radio", "other"];
-$allowedPersonRoles = ["REPORTING_PERSON","VICTIM","SUSPECT","WITNESS","GUARDIAN","OFFICER_SUBJECT"];
-$allowedSuspectStatus = ["UNKNOWN","AT_LARGE","ARRESTED","SURRENDERED","DETAINED"];
-$allowedPropertyRoles = ["STOLEN","DAMAGED","RECOVERED","SEIZED","LOST"];
-$allowedOfficerRoles = ["ADMINISTERING_OFFICER","DUTY_INVESTIGATOR","ASSISTING_OFFICER","DESK_OFFICER","ENCODER"];
+$allowedPersonRoles = ["REPORTING_PERSON", "VICTIM", "SUSPECT", "WITNESS", "GUARDIAN", "OFFICER_SUBJECT"];
+$allowedSuspectStatus = ["UNKNOWN", "AT_LARGE", "ARRESTED", "SURRENDERED", "DETAINED"];
+$allowedPropertyRoles = ["STOLEN", "DAMAGED", "RECOVERED", "SEIZED", "LOST"];
+$allowedOfficerRoles = ["ADMINISTERING_OFFICER", "DUTY_INVESTIGATOR", "ASSISTING_OFFICER", "DESK_OFFICER", "ENCODER"];
 
 if (!in_array($caseStatus, $allowedCase, true)) $caseStatus = "OPEN";
 if (!in_array($reportSource, $allowedSources, true)) $reportSource = "walk_in";
@@ -117,12 +118,8 @@ function current_admin_scope(PDO $pdo, array $AUTH_USER): array {
   ];
 }
 
-/*
-|--------------------------------------------------------------------------
-| Canonicalize province/city scope
-|--------------------------------------------------------------------------
-*/
 $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+
 if (!$canon["ok"]) {
   http_response_code(400);
   echo json_encode([
@@ -161,10 +158,6 @@ try {
   exit;
 }
 
-function generate_incident_code(): string {
-  return "INC-" . gmdate("Ymd-His") . "-" . substr(strtoupper(bin2hex(random_bytes(3))), 0, 6);
-}
-
 function generate_blotter_number(PDO $pdo): string {
   $year = gmdate("Y");
 
@@ -201,32 +194,42 @@ try {
   $pdo->beginTransaction();
 
   $crimeStmt = $pdo->prepare("
-    SELECT id, crime_name, crime_category, focus_crime_code, ciras_offense_code
+    SELECT
+      id,
+      crime_name,
+      crime_category,
+      focus_crime_code,
+      ciras_offense_code
     FROM crime_types
-    WHERE id = ? AND is_active = 1
+    WHERE id = ?
     LIMIT 1
   ");
   $crimeStmt->execute([$crimeTypeId]);
   $crime = $crimeStmt->fetch(PDO::FETCH_ASSOC);
 
   if (!$crime) {
-    throw new Exception("Invalid incident type");
+    $pdo->rollBack();
+    http_response_code(404);
+    echo json_encode(["ok" => false, "message" => "Crime type not found"]);
+    exit;
   }
 
-  $incidentCode = generate_incident_code();
   $blotterEntryNumber = generate_blotter_number($pdo);
 
   if ($irfEntryNumber === null || trim((string)$irfEntryNumber) === "") {
     $irfEntryNumber = generate_irf_number($pdo);
   }
 
-  $stmt = $pdo->prepare("
+  $incidentCode = "INC-" . date("Ymd") . "-" . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+
+  $insert = $pdo->prepare("
     INSERT INTO incident_reports
     (
       incident_code,
+      reporter_user_id,
+      assigned_station_id,
       blotter_entry_number,
       irf_entry_number,
-      reporter_user_id,
       report_source,
       report_channel,
       crime_type_id,
@@ -236,7 +239,6 @@ try {
       ciras_offense_code,
       title,
       narrative,
-      date_reported,
       date_incident_from,
       date_incident_to,
       place_of_incident,
@@ -248,10 +250,8 @@ try {
       lat,
       lng,
       location_type,
-      risk_status,
-      risk_radius_m,
-      incident_phase,
       verification_status,
+      incident_phase,
       case_status,
       has_known_suspect,
       suspect_count,
@@ -265,25 +265,21 @@ try {
     )
     VALUES
     (
-      ?, ?, ?, NULL,
-      ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?,
-      UTC_TIMESTAMP(),
-      ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, NULL, ?,
+      ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?,
-      'SAFE',
-      250,
-      'BLOTTERED',
       'VERIFIED',
+      'BLOTTERED',
       ?,
       ?, ?, ?, ?, ?, ?,
       ?, UTC_TIMESTAMP(), ?
     )
   ");
 
-  $stmt->execute([
+  $insert->execute([
     $incidentCode,
+    (int)($AUTH_USER["station_id"] ?? 0),
     $blotterEntryNumber,
     $irfEntryNumber,
     $reportSource,
@@ -387,10 +383,13 @@ try {
     if (!in_array($role, $allowedPersonRoles, true)) continue;
 
     $suspectStatus = strtoupper(trim((string)($p["suspect_status"] ?? "UNKNOWN")));
-    if (!in_array($suspectStatus, $allowedSuspectStatus, true)) $suspectStatus = "UNKNOWN";
+    if (!in_array($suspectStatus, $allowedSuspectStatus, true)) {
+      $suspectStatus = "UNKNOWN";
+    }
 
     $familyName = trim((string)($p["family_name"] ?? ""));
     $firstName = trim((string)($p["first_name"] ?? ""));
+
     if ($familyName === "" && $firstName === "") continue;
 
     $personIns->execute([
@@ -530,6 +529,7 @@ try {
     )
     VALUES (?, NULL, 'BLOTTERED', NULL, ?, NULL, 'VERIFIED', ?, ?)
   ");
+
   $hist->execute([
     $incidentId,
     $caseStatus,
@@ -539,6 +539,60 @@ try {
 
   recalc_hotspots_after_incident_save($pdo, $incidentId);
   $alertResult = queue_incident_hotspot_alerts($pdo, $incidentId);
+
+  $newValues = [
+    "incident_id" => $incidentId,
+    "incident_code" => $incidentCode,
+    "blotter_entry_number" => $blotterEntryNumber,
+    "irf_entry_number" => $irfEntryNumber,
+    "report_source" => $reportSource,
+    "report_channel" => $reportChannel,
+    "crime_type_id" => (int)$crime["id"],
+    "incident_type" => $crime["crime_name"],
+    "crime_category" => $crime["crime_category"],
+    "title" => $title,
+    "narrative" => $narrative,
+    "date_incident_from" => $dateIncidentFrom,
+    "date_incident_to" => $dateIncidentTo,
+    "place_of_incident" => $placeOfIncident,
+    "sitio" => $sitio,
+    "barangay" => $barangay,
+    "city_municipality" => $cityMunicipality,
+    "province" => $province,
+    "region" => $region,
+    "lat" => $lat,
+    "lng" => $lng,
+    "location_type" => $locationType,
+    "verification_status" => "VERIFIED",
+    "incident_phase" => "BLOTTERED",
+    "case_status" => $caseStatus,
+    "has_known_suspect" => $hasKnownSuspect,
+    "suspect_count" => $suspectCount,
+    "victim_count" => $victimCount,
+    "witness_count" => $witnessCount,
+    "property_loss_flag" => $propertyLossFlag,
+    "estimated_damage_value" => $estimatedDamageValue,
+    "reviewed_by" => $adminId,
+    "admin_notes" => $notes,
+    "persons_count" => count($persons),
+    "properties_count" => count($properties),
+    "officers_count" => count($officers)
+  ];
+
+  write_audit_log(
+    $pdo,
+    $AUTH_USER,
+    "BLOTTER_CREATED",
+    "incident_report",
+    $incidentId,
+    "Station Admin created a blotter record.",
+    [
+      "module" => "blotter",
+      "incident_id" => $incidentId,
+      "old_values" => null,
+      "new_values" => $newValues
+    ]
+  );
 
   $pdo->commit();
 
@@ -557,8 +611,12 @@ try {
       "barangay" => $barangay
     ]
   ]);
+
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
+
   http_response_code(500);
   echo json_encode([
     "ok" => false,

@@ -83,16 +83,23 @@ try {
   $stationId = (int)$admin["station_id"];
   $announcementId = (int)$id;
 
-  $check = $pdo->prepare("
-    SELECT id
+  /* 🔥 FETCH OLD VALUES */
+  $oldStmt = $pdo->prepare("
+    SELECT
+      id,
+      title,
+      message,
+      priority,
+      status
     FROM community_announcements
     WHERE id = ?
       AND station_id = ?
     LIMIT 1
   ");
-  $check->execute([$announcementId, $stationId]);
+  $oldStmt->execute([$announcementId, $stationId]);
+  $old = $oldStmt->fetch(PDO::FETCH_ASSOC);
 
-  if (!$check->fetch(PDO::FETCH_ASSOC)) {
+  if (!$old) {
     out(404, [
       "ok" => false,
       "message" => "Announcement not found under your station."
@@ -120,6 +127,7 @@ try {
     $stationId
   ]);
 
+  /* 🔥 AUDIT WITH OLD + NEW */
   write_audit_log(
     $pdo,
     $admin,
@@ -127,7 +135,16 @@ try {
     "community_announcement",
     $announcementId,
     "Station Admin updated a community announcement.",
-    []
+    [
+      "module" => "announcements",
+      "old_values" => $old,
+      "new_values" => [
+        "title" => $title,
+        "message" => $message,
+        "priority" => $priority,
+        "status" => $status
+      ]
+    ]
   );
 
   out(200, [

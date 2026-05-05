@@ -80,7 +80,9 @@ try {
       assigned_station_id,
       authorization_status,
       status,
-      outcome
+      outcome,
+      outcome_notes,
+      outcome_at
     FROM responder_assignments
     WHERE id = ?
       AND assigned_user_id = ?
@@ -136,13 +138,9 @@ try {
         UPDATE incident_reports
         SET verification_status = 'VERIFIED',
             incident_phase = 'UNDER_INVESTIGATION',
-            reviewed_by = ?,
             reviewed_at = NOW()
         WHERE id = ?
-      ")->execute([
-        (int)$police["id"],
-        (int)$assignment["source_id"]
-      ]);
+      ")->execute([(int)$assignment["source_id"]]);
     }
 
     if ($outcome === "FALSE_REPORT") {
@@ -150,43 +148,23 @@ try {
         UPDATE incident_reports
         SET verification_status = 'FALSE_REPORT',
             incident_phase = 'REJECTED',
-            reviewed_by = ?,
-            reviewed_at = NOW(),
-            resolved_at = NOW(),
-            admin_notes = ?
+            case_status = 'UNFOUNDED',
+            reviewed_at = NOW()
         WHERE id = ?
-      ")->execute([
-        (int)$police["id"],
-        $notes !== "" ? $notes : "Marked as false report by Police on Field.",
-        (int)$assignment["source_id"]
-      ]);
+      ")->execute([(int)$assignment["source_id"]]);
     }
 
     if ($outcome === "RESOLVED") {
       $pdo->prepare("
         UPDATE incident_reports
-        SET verification_status = 'VERIFIED',
-            incident_phase = 'RESOLVED',
+        SET incident_phase = 'RESOLVED',
             case_status = 'CLOSED',
-            reviewed_by = ?,
-            reviewed_at = NOW(),
-            resolved_at = NOW(),
-            admin_notes = ?
+            resolved_at = NOW()
         WHERE id = ?
-      ")->execute([
-        (int)$police["id"],
-        $notes !== "" ? $notes : "Resolved by Police on Field.",
-        (int)$assignment["source_id"]
-      ]);
+      ")->execute([(int)$assignment["source_id"]]);
     }
-  }
-
-  if ($assignment["source_type"] === "panic") {
-    if ($outcome === "FALSE_REPORT") {
-      $panicStatus = "false_alarm";
-    } else {
-      $panicStatus = "resolved";
-    }
+  } else {
+    $panicStatus = $outcome === "FALSE_REPORT" ? "false_alarm" : "resolved";
 
     $pdo->prepare("
       UPDATE panic_requests
@@ -204,68 +182,30 @@ try {
         last_seen_at = NOW()
     WHERE id = ?
       AND role = 'police_on_field'
-  ")->execute([
-    (int)$police["id"]
-  ]);
-
-  $adminStmt = $pdo->prepare("
-    SELECT id
-    FROM users
-    WHERE role = 'admin'
-      AND station_id = ?
-      AND account_status = 'active'
-      AND valid = 'valid'
-    LIMIT 1
-  ");
-  $adminStmt->execute([
-    (int)$police["station_id"]
-  ]);
-  $admin = $adminStmt->fetch(PDO::FETCH_ASSOC);
-
-  if ($admin) {
-    $notif = $pdo->prepare("
-      INSERT INTO notification_alerts (
-        user_id,
-        type,
-        title,
-        message,
-        incident_id,
-        severity,
-        is_read
-      )
-      VALUES (?, 'ASSIGNMENT_OUTCOME', ?, ?, ?, 'HIGH', 0)
-    ");
-
-    $notif->execute([
-      (int)$admin["id"],
-      "Police Assignment Outcome Updated",
-      "Police on Field updated the assignment outcome to " . $outcome . ".",
-      $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null
-    ]);
-  }
-
-  $auditAction = "ASSIGNMENT_RESOLVED";
-
-  if ($outcome === "FALSE_REPORT" && $assignment["source_type"] === "incident") {
-    $auditAction = "FALSE_REPORT_MARKED";
-  }
-
-  if ($outcome === "FALSE_REPORT" && $assignment["source_type"] === "panic") {
-    $auditAction = "FALSE_ALARM_MARKED";
-  }
+  ")->execute([(int)$police["id"]]);
 
   write_audit_log(
     $pdo,
     $police,
-    $auditAction,
+    $outcome === "FALSE_REPORT"
+      ? "ASSIGNMENT_FALSE_REPORT_MARKED"
+      : ($outcome === "RESOLVED" ? "ASSIGNMENT_RESOLVED" : "ASSIGNMENT_VERIFIED"),
     "responder_assignment",
     $assignmentId,
-    "Police on Field updated assignment outcome to " . $outcome . ".",
+    "Police on Field updated assignment outcome.",
     [
+      "module" => "dispatch_queue",
       "assignment_id" => $assignmentId,
       "incident_id" => $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
       "panic_id" => $assignment["source_type"] === "panic" ? (int)$assignment["source_id"] : null,
-      "target_user_id" => $admin ? (int)$admin["id"] : null
+      "target_user_id" => (int)$police["id"],
+      "old_values" => $assignment,
+      "new_values" => [
+        "status" => "resolved",
+        "outcome" => $outcome,
+        "outcome_notes" => $notes !== "" ? $notes : null,
+        "police_duty_status" => "available"
+      ]
     ]
   );
 
@@ -275,8 +215,6 @@ try {
     "ok" => true,
     "message" => "Assignment outcome updated successfully.",
     "assignment_id" => $assignmentId,
-    "source_type" => $assignment["source_type"],
-    "source_id" => (int)$assignment["source_id"],
     "outcome" => $outcome
   ]);
 

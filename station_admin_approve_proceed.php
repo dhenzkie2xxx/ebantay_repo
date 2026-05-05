@@ -79,6 +79,11 @@ try {
       ra.assigned_station_id,
       ra.authorization_status,
       ra.status,
+      ra.notes,
+      ra.detected_distance_m,
+      ra.proceed_requested_at,
+      ra.authorized_by,
+      ra.authorized_at,
 
       u.firstname,
       u.lastname,
@@ -192,7 +197,7 @@ try {
     $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null
   ]);
 
-    write_audit_log(
+  write_audit_log(
     $pdo,
     $admin,
     $decision === "approve" ? "PROCEED_APPROVED" : "PROCEED_DENIED",
@@ -202,10 +207,19 @@ try {
       ? "Station Admin approved Police on Field request to proceed."
       : "Station Admin denied Police on Field request to proceed.",
     [
+      "module" => "dispatch_queue",
       "assignment_id" => $assignmentId,
       "incident_id" => $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
       "panic_id" => $assignment["source_type"] === "panic" ? (int)$assignment["source_id"] : null,
-      "target_user_id" => (int)$assignment["assigned_user_id"]
+      "target_user_id" => (int)$assignment["assigned_user_id"],
+      "old_values" => $assignment,
+      "new_values" => [
+        "authorization_status" => $newAuthStatus,
+        "status" => $newAssignmentStatus,
+        "authorized_by" => (int)$admin["id"],
+        "notes" => $notes !== "" ? $notes : null,
+        "police_duty_status" => $policeDutyStatus
+      ]
     ]
   );
 

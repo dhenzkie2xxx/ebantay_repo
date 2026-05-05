@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/require_admin_or_super_admin.php";
 require_once __DIR__ . "/user_flag_helpers.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -15,6 +16,7 @@ $id = (int)($data["id"] ?? 0);
 $status = strtolower(trim((string)($data["status"] ?? "")));
 
 $allowed = ["new", "ack", "resolved", "false_alarm"];
+
 if ($id <= 0 || !in_array($status, $allowed, true)) {
   out(400, ["ok" => false, "message" => "Invalid payload"]);
 }
@@ -41,6 +43,7 @@ function queue_user_notification(
   string $severity = "MEDIUM"
 ): void {
   $severity = strtoupper(trim($severity));
+
   if (!in_array($severity, ["LOW", "MEDIUM", "HIGH"], true)) {
     $severity = "MEDIUM";
   }
@@ -81,8 +84,13 @@ try {
       p.user_id,
       p.level,
       p.status,
+      p.lat,
+      p.lng,
+      p.barangay,
+      p.city_municipality,
       p.province,
-      p.assigned_station_id
+      p.assigned_station_id,
+      p.created_at
     FROM panic_requests p
     WHERE p.id = ?
     LIMIT 1
@@ -106,60 +114,104 @@ try {
     ]);
   }
 
-  $stmt = $pdo->prepare("
+  $update = $pdo->prepare("
     UPDATE panic_requests
-    SET status = ?
+    SET status = ?,
+        reviewed_by = ?,
+        reviewed_at = NOW()
     WHERE id = ?
   ");
-  $stmt->execute([$status, $id]);
 
-  $oldStatus = strtolower((string)($old["status"] ?? ""));
-  $panicUserId = (int)($old["user_id"] ?? 0);
+  $update->execute([
+    $status,
+    $adminId,
+    $id
+  ]);
 
-  if ($status === "false_alarm" && $oldStatus !== "false_alarm" && $panicUserId > 0) {
+  $userId = (int)($old["user_id"] ?? 0);
+
+  if ($status === "false_alarm" && $userId > 0 && strtolower((string)$old["status"]) !== "false_alarm") {
     flag_user_after_false_alarm(
       $pdo,
-      $panicUserId,
+      $userId,
       $id,
       $adminId
     );
   }
 
-  if ($oldStatus !== $status && $panicUserId > 0) {
-    $panicTitle = "Panic Request Update";
-    $panicMessage = "Your panic request was updated to status: " . strtoupper($status) . ".";
+  if ($userId > 0 && strtolower((string)$old["status"]) !== $status) {
+    $title = "Panic Request Update";
+    $message = "Your panic request status was updated to " . strtoupper($status) . ".";
 
-    $severity = "HIGH";
-    if ($status === "ack") $severity = "MEDIUM";
-    if ($status === "resolved") $severity = "LOW";
-    if ($status === "false_alarm") $severity = "HIGH";
+    $severity = "MEDIUM";
+
+    if ($status === "resolved") {
+      $severity = "LOW";
+    }
+
+    if ($status === "false_alarm") {
+      $severity = "HIGH";
+    }
 
     queue_user_notification(
       $pdo,
-      $panicUserId,
+      $userId,
       "PANIC_STATUS",
-      $panicTitle,
-      $panicMessage,
+      $title,
+      $message,
       null,
       null,
       $severity
     );
   }
 
+  $auditAction = "PANIC_UPDATED";
+
+  if ($status === "ack") {
+    $auditAction = "PANIC_ACKNOWLEDGED";
+  }
+
+  if ($status === "resolved") {
+    $auditAction = "PANIC_RESOLVED";
+  }
+
+  if ($status === "false_alarm") {
+    $auditAction = "PANIC_FALSE_ALARM_MARKED";
+  }
+
+  write_audit_log(
+    $pdo,
+    $AUTH_USER,
+    $auditAction,
+    "panic_request",
+    $id,
+    "Station Admin updated a panic request status.",
+    [
+      "module" => "panic_requests",
+      "panic_id" => $id,
+      "target_user_id" => $userId > 0 ? $userId : null,
+      "old_values" => $old,
+      "new_values" => [
+        "status" => $status,
+        "reviewed_by" => $adminId,
+        "reviewed_at" => date("Y-m-d H:i:s")
+      ]
+    ]
+  );
+
   $pdo->commit();
 
   out(200, [
     "ok" => true,
     "message" => "Panic request updated successfully",
-    "scope" => [
-      "role" => $role,
-      "station_id" => $role === "admin" ? $stationId : null,
-      "assigned_station_id" => $old["assigned_station_id"] !== null ? (int)$old["assigned_station_id"] : null,
-      "panic_province" => $old["province"] ?? null
-    ]
+    "panic_id" => $id,
+    "status" => $status
   ]);
+
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) $pdo->rollBack();
+  if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+  }
 
   out(500, [
     "ok" => false,

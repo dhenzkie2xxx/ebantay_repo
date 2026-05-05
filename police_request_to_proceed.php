@@ -101,7 +101,17 @@ try {
   $pdo->beginTransaction();
 
   $existingStmt = $pdo->prepare("
-    SELECT id, authorization_status
+    SELECT
+      id,
+      source_type,
+      source_id,
+      assigned_user_id,
+      assigned_station_id,
+      assignment_role,
+      status,
+      authorization_status,
+      proceed_requested_at,
+      notes
     FROM responder_assignments
     WHERE source_type = ?
       AND source_id = ?
@@ -110,6 +120,7 @@ try {
       AND status <> 'cancelled'
     LIMIT 1
   ");
+
   $existingStmt->execute([
     $sourceType,
     $sourceId,
@@ -119,15 +130,6 @@ try {
   $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
 
   if ($existing) {
-    if (in_array($existing["authorization_status"], ["go_signal_sent", "approved_to_proceed"], true)) {
-      $pdo->rollBack();
-      out(409, [
-        "ok" => false,
-        "message" => "You are already authorized to proceed.",
-        "authorization_status" => $existing["authorization_status"]
-      ]);
-    }
-
     $assignmentId = (int)$existing["id"];
 
     $upd = $pdo->prepare("
@@ -137,8 +139,9 @@ try {
           notes = ?
       WHERE id = ?
     ");
+
     $upd->execute([
-      $notes !== "" ? $notes : "Police on Field requested confirmation to proceed.",
+      $notes !== "" ? $notes : null,
       $assignmentId
     ]);
   } else {
@@ -154,7 +157,7 @@ try {
         proceed_requested_at,
         notes
       )
-      VALUES (?, ?, ?, ?, 'PRIMARY', 'new', 'requested_to_proceed', NOW(), ?)
+      VALUES (?, ?, ?, ?, 'PRIMARY', 'pending', 'requested_to_proceed', NOW(), ?)
     ");
 
     $ins->execute([
@@ -162,58 +165,62 @@ try {
       $sourceId,
       (int)$police["id"],
       $stationId,
-      $notes !== "" ? $notes : "Police on Field requested confirmation to proceed."
+      $notes !== "" ? $notes : null
     ]);
 
     $assignmentId = (int)$pdo->lastInsertId();
   }
 
-  $adminStmt = $pdo->prepare("
-    SELECT id
-    FROM users
-    WHERE role = 'admin'
-      AND station_id = ?
-      AND account_status = 'active'
-      AND valid = 'valid'
-    LIMIT 1
-  ");
-  $adminStmt->execute([$stationId]);
-  $admin = $adminStmt->fetch(PDO::FETCH_ASSOC);
+  $pdo->prepare("
+    INSERT INTO notification_alerts (
+      user_id,
+      type,
+      title,
+      message,
+      incident_id,
+      severity,
+      is_read
+    )
+    SELECT
+      u.id,
+      'PROCEED_REQUEST',
+      'Proceed Request Received',
+      'Police on Field requested permission to proceed.',
+      ?,
+      'HIGH',
+      0
+    FROM users u
+    WHERE u.role = 'admin'
+      AND u.station_id = ?
+      AND u.account_status = 'active'
+  ")->execute([
+    $sourceType === "incident" ? $sourceId : null,
+    $stationId
+  ]);
 
-  if ($admin) {
-    $notif = $pdo->prepare("
-      INSERT INTO notification_alerts (
-        user_id,
-        type,
-        title,
-        message,
-        incident_id,
-        severity,
-        is_read
-      )
-      VALUES (?, 'REQUEST_TO_PROCEED', ?, ?, ?, 'HIGH', 0)
-    ");
-
-    $notif->execute([
-      (int)$admin["id"],
-      "Confirmation to Proceed Requested",
-      "A Police on Field is requesting approval to proceed.",
-      $sourceType === "incident" ? $sourceId : null
-    ]);
-  }
-
-    write_audit_log(
+  write_audit_log(
     $pdo,
     $police,
     "PROCEED_REQUEST_RECEIVED",
     "responder_assignment",
     $assignmentId,
-    "Police on Field requested confirmation to proceed.",
+    "Police on Field requested permission to proceed.",
     [
+      "module" => "dispatch_queue",
       "assignment_id" => $assignmentId,
       "incident_id" => $sourceType === "incident" ? $sourceId : null,
       "panic_id" => $sourceType === "panic" ? $sourceId : null,
-      "target_user_id" => $admin ? (int)$admin["id"] : null
+      "target_user_id" => (int)$police["id"],
+      "old_values" => $existing ?: null,
+      "new_values" => [
+        "source_type" => $sourceType,
+        "source_id" => $sourceId,
+        "assigned_user_id" => (int)$police["id"],
+        "assigned_station_id" => $stationId,
+        "assignment_role" => "PRIMARY",
+        "authorization_status" => "requested_to_proceed",
+        "notes" => $notes !== "" ? $notes : null
+      ]
     ]
   );
 
@@ -221,7 +228,7 @@ try {
 
   out(200, [
     "ok" => true,
-    "message" => "Confirmation to proceed request sent to Station Admin.",
+    "message" => "Request to proceed submitted successfully.",
     "assignment_id" => $assignmentId,
     "authorization_status" => "requested_to_proceed"
   ]);

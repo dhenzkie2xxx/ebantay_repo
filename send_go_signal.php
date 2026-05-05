@@ -188,7 +188,17 @@ try {
   $pdo->beginTransaction();
 
   $existingStmt = $pdo->prepare("
-    SELECT id
+    SELECT
+      id,
+      source_type,
+      source_id,
+      assigned_user_id,
+      assigned_station_id,
+      assignment_role,
+      status,
+      authorization_status,
+      detected_distance_m,
+      notes
     FROM responder_assignments
     WHERE source_type = ?
       AND source_id = ?
@@ -214,6 +224,7 @@ try {
         notes = ?
       WHERE id = ?
     ");
+
     $upd->execute([
       (int)$admin["id"],
       $distanceM,
@@ -310,10 +321,25 @@ try {
     $assignmentId,
     "Station Admin sent Go Signal to Police on Field.",
     [
+      "module" => "dispatch_queue",
       "assignment_id" => $assignmentId,
       "incident_id" => $sourceType === "incident" ? $sourceId : null,
       "panic_id" => $sourceType === "panic" ? $sourceId : null,
-      "target_user_id" => $policeUserId
+      "target_user_id" => $policeUserId,
+      "old_values" => $existing ?: null,
+      "new_values" => [
+        "source_type" => $sourceType,
+        "source_id" => $sourceId,
+        "assigned_user_id" => $policeUserId,
+        "assigned_station_id" => $stationId,
+        "assignment_role" => "PRIMARY",
+        "status" => "ack",
+        "authorization_status" => "go_signal_sent",
+        "authorized_by" => (int)$admin["id"],
+        "detected_distance_m" => $distanceM,
+        "notes" => $notes !== "" ? $notes : null,
+        "police_duty_status" => "enroute"
+      ]
     ]
   );
 

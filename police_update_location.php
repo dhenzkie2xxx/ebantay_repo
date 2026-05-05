@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/audit_log_helper.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -14,18 +15,17 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
 
-$token = bearer_token();
-
-if ($token === "") {
-  $dataToken = json_decode(file_get_contents("php://input"), true);
-  $token = trim($dataToken["token"] ?? "");
-}
-
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
 if (!is_array($data)) {
   out(400, ["ok" => false, "message" => "Invalid JSON body"]);
+}
+
+$token = bearer_token();
+
+if ($token === "") {
+  $token = trim($data["token"] ?? "");
 }
 
 $lat = $data["lat"] ?? null;
@@ -75,9 +75,11 @@ try {
   if ($user["role"] !== "police_on_field") {
     out(403, [
       "ok" => false,
-      "message" => "Only Police on Field can update responder location."
+      "message" => "Only Police on Field can update location."
     ]);
   }
+
+  $oldDutyStatus = $user["duty_status"] ?? null;
 
   $pdo->beginTransaction();
 
@@ -112,18 +114,36 @@ try {
     (int)$user["id"]
   ]);
 
+  if ($oldDutyStatus !== $dutyStatus) {
+    write_audit_log(
+      $pdo,
+      $user,
+      "POLICE_DUTY_STATUS_UPDATED",
+      "user",
+      (int)$user["id"],
+      "Police on Field updated duty status.",
+      [
+        "module" => "police_on_field",
+        "target_user_id" => (int)$user["id"],
+        "old_values" => [
+          "duty_status" => $oldDutyStatus
+        ],
+        "new_values" => [
+          "duty_status" => $dutyStatus,
+          "lat" => $lat,
+          "lng" => $lng,
+          "accuracy_m" => $accuracy
+        ]
+      ]
+    );
+  }
+
   $pdo->commit();
 
   out(200, [
     "ok" => true,
-    "message" => "Location and duty status updated.",
-    "user_id" => (int)$user["id"],
-    "duty_status" => $dutyStatus,
-    "location" => [
-      "lat" => $lat,
-      "lng" => $lng,
-      "accuracy_m" => $accuracy
-    ]
+    "message" => "Location updated successfully.",
+    "duty_status" => $dutyStatus
   ]);
 
 } catch (Throwable $e) {

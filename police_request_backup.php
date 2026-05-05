@@ -72,7 +72,9 @@ try {
       assigned_station_id,
       authorization_status,
       status,
-      backup_requested
+      backup_requested,
+      backup_requested_at,
+      backup_reason
     FROM responder_assignments
     WHERE id = ?
       AND assigned_user_id = ?
@@ -107,7 +109,7 @@ try {
   if ((int)$assignment["backup_requested"] === 1) {
     out(409, [
       "ok" => false,
-      "message" => "Backup was already requested for this assignment."
+      "message" => "Backup has already been requested for this assignment."
     ]);
   }
 
@@ -117,52 +119,41 @@ try {
     UPDATE responder_assignments
     SET backup_requested = 1,
         backup_requested_at = NOW(),
-        notes = CONCAT(COALESCE(notes, ''), '\nBackup requested: ', ?)
+        backup_reason = ?
     WHERE id = ?
   ");
 
   $upd->execute([
-    $reason !== "" ? $reason : "No reason provided.",
+    $reason !== "" ? $reason : null,
     $assignmentId
   ]);
 
-  $adminStmt = $pdo->prepare("
-    SELECT id
-    FROM users
-    WHERE role = 'admin'
-      AND station_id = ?
-      AND account_status = 'active'
-      AND valid = 'valid'
-    LIMIT 1
-  ");
-
-  $adminStmt->execute([
-    (int)$police["station_id"]
+  $pdo->prepare("
+    INSERT INTO notification_alerts (
+      user_id,
+      type,
+      title,
+      message,
+      incident_id,
+      severity,
+      is_read
+    )
+    SELECT
+      u.id,
+      'BACKUP_REQUEST',
+      'Backup Request Received',
+      'Police on Field requested backup support.',
+      ?,
+      'HIGH',
+      0
+    FROM users u
+    WHERE u.role = 'admin'
+      AND u.station_id = ?
+      AND u.account_status = 'active'
+  ")->execute([
+    $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
+    (int)$assignment["assigned_station_id"]
   ]);
-
-  $admin = $adminStmt->fetch(PDO::FETCH_ASSOC);
-
-  if ($admin) {
-    $notif = $pdo->prepare("
-      INSERT INTO notification_alerts (
-        user_id,
-        type,
-        title,
-        message,
-        incident_id,
-        severity,
-        is_read
-      )
-      VALUES (?, 'BACKUP_REQUEST', ?, ?, ?, 'HIGH', 0)
-    ");
-
-    $notif->execute([
-      (int)$admin["id"],
-      "Backup Requested",
-      "Police on Field requested backup. " . ($reason !== "" ? $reason : ""),
-      $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null
-    ]);
-  }
 
   write_audit_log(
     $pdo,
@@ -170,12 +161,18 @@ try {
     "BACKUP_REQUESTED",
     "responder_assignment",
     $assignmentId,
-    "Police on Field requested backup.",
+    "Police on Field requested backup support.",
     [
+      "module" => "dispatch_queue",
       "assignment_id" => $assignmentId,
       "incident_id" => $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
       "panic_id" => $assignment["source_type"] === "panic" ? (int)$assignment["source_id"] : null,
-      "target_user_id" => $admin ? (int)$admin["id"] : null
+      "target_user_id" => (int)$police["id"],
+      "old_values" => $assignment,
+      "new_values" => [
+        "backup_requested" => 1,
+        "backup_reason" => $reason !== "" ? $reason : null
+      ]
     ]
   );
 
@@ -183,10 +180,8 @@ try {
 
   out(200, [
     "ok" => true,
-    "message" => "Backup request sent to Station Admin.",
-    "assignment_id" => $assignmentId,
-    "backup_requested" => true,
-    "backup_requested_at" => date("Y-m-d H:i:s")
+    "message" => "Backup request submitted successfully.",
+    "assignment_id" => $assignmentId
   ]);
 
 } catch (Throwable $e) {
