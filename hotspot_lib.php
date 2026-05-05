@@ -360,7 +360,12 @@ function get_computed_hotspots(
   $cityFilter = hotspot_normalize_scope_value($cityFilter);
 
   $hotspots = hotspot_base_rows($pdo);
-  $incidentRows = hotspot_incident_rows($pdo, $days, $provinceFilter, $cityFilter, $role, $userId);
+
+  // Hotspot explanation metrics use historical verified incidents.
+  // Dashboard heatmap can still use last 30 days from dashboard_map_feed.php.
+  $incidentRows = hotspot_incident_rows($pdo, 3650, $provinceFilter, $cityFilter, $role, $userId);
+
+  // Panic requests remain period-based.
   $panicRows = hotspot_panic_rows($pdo, $days, $provinceFilter, $cityFilter, $role, $userId);
 
   $out = [];
@@ -376,12 +381,17 @@ function get_computed_hotspots(
     $severityScoreTotal = 0.0;
     $maxCrimeWeight = 0.0;
     $lastDetected = null;
+    $crimeCounts = [];
 
     foreach ($incidentRows as $r) {
       $d = hotspot_distance_meters($hLat, $hLng, (float)$r["lat"], (float)$r["lng"]);
 
       if ($d <= $radius) {
         $incidentCount++;
+
+        $type = trim((string)($r["incident_type"] ?? "UNKNOWN"));
+        if ($type === "") $type = "UNKNOWN";
+        $crimeCounts[$type] = ($crimeCounts[$type] ?? 0) + 1;
 
         $weight = hotspot_crime_weight(
           $r["incident_type"] ?? null,
@@ -402,6 +412,7 @@ function get_computed_hotspots(
 
     foreach ($panicRows as $p) {
       $d = hotspot_distance_meters($hLat, $hLng, (float)$p["lat"], (float)$p["lng"]);
+
       if ($d <= $radius) {
         $panicCount++;
         $panicScore += (($p["level"] ?? "") === "urgent") ? 2 : 1;
@@ -415,6 +426,8 @@ function get_computed_hotspots(
     if (($provinceFilter !== null && $cityFilter !== null) && $incidentCount === 0 && $panicCount === 0) {
       continue;
     }
+
+    arsort($crimeCounts);
 
     $color = hotspot_compute_color($incidentCount, $panicCount, $severityScoreTotal, $maxCrimeWeight);
     $riskLevel = hotspot_compute_risk_level($color);
@@ -451,6 +464,7 @@ function get_computed_hotspots(
       "density_value" => round($densityValue, 8),
       "density_per_km2" => round($densityPerKm2, 2),
       "density_level" => $densityLevel,
+      "crime_breakdown" => $crimeCounts,
       "last_detected_at" => $lastDetected,
       "created_at" => $h["created_at"],
     ];
@@ -458,8 +472,10 @@ function get_computed_hotspots(
 
   usort($out, function ($a, $b) {
     $rank = ["red" => 5, "orange" => 4, "yellow" => 3, "green" => 2, "none" => 1];
+
     $ra = $rank[$a["highlight_color"]] ?? 0;
     $rb = $rank[$b["highlight_color"]] ?? 0;
+
     if ($ra !== $rb) return $rb <=> $ra;
 
     $severityCmp = ($b["severity_score_total"] ?? 0) <=> ($a["severity_score_total"] ?? 0);
