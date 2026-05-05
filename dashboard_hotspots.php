@@ -11,14 +11,66 @@ function out($code, $payload) {
   exit;
 }
 
+function is_valid_date_ymd($date) {
+  if (!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return false;
+  [$y, $m, $d] = array_map("intval", explode("-", $date));
+  return checkdate($m, $d, $y);
+}
+
 try {
   $limit = (int)($_GET["limit"] ?? 5);
   if ($limit < 1) $limit = 5;
   if ($limit > 20) $limit = 20;
 
+  /*
+  |--------------------------------------------------------------------------
+  | FILTER MODE
+  |--------------------------------------------------------------------------
+  | Dashboard behavior:
+  |   ?days=30
+  |
+  | DataAnalytics behavior:
+  |   ?mode=year&year=2026
+  |   ?mode=custom&from=2026-01-01&to=2026-05-06
+  |--------------------------------------------------------------------------
+  */
+
+  $mode = $_GET["mode"] ?? "";
+  $year = $_GET["year"] ?? "";
+  $from = $_GET["from"] ?? "";
+  $to = $_GET["to"] ?? "";
+
   $days = (int)($_GET["days"] ?? 30);
   if ($days < 1) $days = 30;
   if ($days > 365) $days = 365;
+
+  $filterMode = "days";
+  $periodLabel = "Last " . $days . " days";
+
+  $analyticsFrom = null;
+  $analyticsTo = null;
+
+  if ($mode === "year" && preg_match('/^\d{4}$/', (string)$year)) {
+    $filterMode = "year";
+    $year = (int)$year;
+
+    $analyticsFrom = $year . "-01-01";
+    $analyticsTo = $year . "-12-31";
+    $periodLabel = "Year " . $year;
+
+  } elseif ($mode === "custom" && is_valid_date_ymd($from) && is_valid_date_ymd($to)) {
+    if (strtotime($from) > strtotime($to)) {
+      out(400, [
+        "ok" => false,
+        "message" => "Invalid date range. From date must not be later than To date."
+      ]);
+    }
+
+    $filterMode = "custom";
+    $analyticsFrom = $from;
+    $analyticsTo = $to;
+    $periodLabel = $from . " to " . $to;
+  }
 
   $scope = admin_scope_from_auth($pdo, $AUTH_USER);
 
@@ -38,13 +90,27 @@ try {
     }
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | IMPORTANT
+  |--------------------------------------------------------------------------
+  | If $analyticsFrom and $analyticsTo are null:
+  |   - hotspot_lib.php keeps historical incident explanation behavior.
+  |
+  | If they have values:
+  |   - DataAnalytics hotspot results become dynamic by selected period.
+  |--------------------------------------------------------------------------
+  */
+
   $computed = get_computed_hotspots(
     $pdo,
     $days,
     $provinceFilter ?: null,
     $cityFilter ?: null,
     $role,
-    null
+    null,
+    $analyticsFrom,
+    $analyticsTo
   );
 
   $items = array_slice($computed, 0, $limit);
@@ -54,7 +120,12 @@ try {
     "scope" => $scope,
     "filters" => [
       "limit" => $limit,
-      "days" => $days
+      "mode" => $filterMode,
+      "days" => $filterMode === "days" ? $days : null,
+      "year" => $filterMode === "year" ? (int)$year : null,
+      "from" => $filterMode === "custom" ? $from : null,
+      "to" => $filterMode === "custom" ? $to : null,
+      "period_label" => $periodLabel
     ],
     "items" => array_map(function ($row) {
       return [
@@ -74,11 +145,14 @@ try {
         "panic_count" => isset($row["panic_count"]) ? (int)$row["panic_count"] : 0,
         "panic_score" => isset($row["panic_score"]) ? (int)$row["panic_score"] : 0,
         "point_count" => isset($row["point_count"]) ? (int)$row["point_count"] : 0,
-        "score" => isset($row["score"]) ? (int)$row["score"] : 0,
+        "severity_score_total" => isset($row["severity_score_total"]) ? (float)$row["severity_score_total"] : 0,
+        "max_crime_weight" => isset($row["max_crime_weight"]) ? (float)$row["max_crime_weight"] : 0,
+        "score" => isset($row["score"]) ? (float)$row["score"] : 0,
         "area_m2" => isset($row["area_m2"]) ? (float)$row["area_m2"] : 0,
         "density_value" => isset($row["density_value"]) ? (float)$row["density_value"] : 0,
         "density_per_km2" => isset($row["density_per_km2"]) ? (float)$row["density_per_km2"] : 0,
         "density_level" => strtoupper((string)($row["density_level"] ?? "LOW")),
+        "crime_breakdown" => $row["crime_breakdown"] ?? [],
         "last_detected_at" => $row["last_detected_at"] ?? null,
         "created_at" => $row["created_at"] ?? null
       ];

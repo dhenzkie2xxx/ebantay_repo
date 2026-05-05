@@ -10,24 +10,97 @@ function out($code, $payload){
   exit;
 }
 
+function is_valid_date_ymd($date){
+  if(!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return false;
+  [$y, $m, $d] = array_map("intval", explode("-", $date));
+  return checkdate($m, $d, $y);
+}
+
 try{
 
 $scope = admin_scope_from_auth($pdo,$AUTH_USER);
+
+/*
+|--------------------------------------------------------------------------
+| FILTER MODE
+|--------------------------------------------------------------------------
+| Dashboard still works with:
+|   ?days=365
+|
+| Data Analytics works with:
+|   ?mode=year&year=2026
+|   ?mode=custom&from=2026-01-01&to=2026-05-06
+|--------------------------------------------------------------------------
+*/
+
+$mode = $_GET["mode"] ?? "";
+$year = $_GET["year"] ?? "";
+$from = $_GET["from"] ?? "";
+$to = $_GET["to"] ?? "";
 
 $days = (int)($_GET["days"] ?? 30);
 
 if($days < 7) $days = 30;
 if($days > 365) $days = 365;
 
-$params = [
- ":days"=>$days
-];
+$params = [];
+
+$dateExpr = "COALESCE(date_reported, created_at)";
+$periodLabel = "";
+$filterMode = "days";
 
 $where = "
 WHERE verification_status='VERIFIED'
-AND COALESCE(date_reported,created_at)
->= (UTC_TIMESTAMP() - INTERVAL :days DAY)
 ";
+
+if($mode === "year" && preg_match('/^\d{4}$/', (string)$year)){
+  $filterMode = "year";
+  $year = (int)$year;
+
+  $where .= "
+  AND $dateExpr >= :year_start
+  AND $dateExpr < :year_end
+  ";
+
+  $params[":year_start"] = $year . "-01-01 00:00:00";
+  $params[":year_end"] = ($year + 1) . "-01-01 00:00:00";
+  $periodLabel = "Year " . $year;
+
+}else if($mode === "custom" && is_valid_date_ymd($from) && is_valid_date_ymd($to)){
+  $filterMode = "custom";
+
+  if(strtotime($from) > strtotime($to)){
+    out(400,[
+      "ok"=>false,
+      "message"=>"Invalid date range. From date must not be later than To date."
+    ]);
+  }
+
+  $where .= "
+  AND $dateExpr >= :date_from
+  AND $dateExpr < DATE_ADD(:date_to, INTERVAL 1 DAY)
+  ";
+
+  $params[":date_from"] = $from . " 00:00:00";
+  $params[":date_to"] = $to . " 00:00:00";
+  $periodLabel = $from . " to " . $to;
+
+}else{
+  /*
+  |--------------------------------------------------------------------------
+  | DEFAULT DASHBOARD BEHAVIOR
+  |--------------------------------------------------------------------------
+  | Do not break Dashboard.jsx. If no mode is provided, it still uses days.
+  |--------------------------------------------------------------------------
+  */
+
+  $where .= "
+  AND $dateExpr >= (UTC_TIMESTAMP() - INTERVAL :days DAY)
+  ";
+
+  $params[":days"] = $days;
+  $periodLabel = "Last " . $days . " days";
+}
 
 $where .= scope_where_clause(
  "province",
@@ -60,7 +133,11 @@ $N=(int)$totalStmt->fetchColumn();
 if($N<=0){
  out(200,[
   "ok"=>true,
+  "scope"=>$scope,
+  "filter_mode"=>$filterMode,
+  "period_label"=>$periodLabel,
   "total"=>0,
+  "days"=>$filterMode === "days" ? $days : null,
   "formula"=>"fi=ni/N",
   "by_type"=>[],
   "barangay_patterns"=>[],
@@ -82,12 +159,12 @@ $typeParams[":N"]=$N;
 
 $stmt=$pdo->prepare("
 SELECT
-incident_type,
+COALESCE(NULLIF(incident_type,''),'Unknown') incident_type,
 COUNT(*) n_i,
 ROUND(COUNT(*)/:N,4) rel_freq
 FROM incident_reports
 $where
-GROUP BY incident_type
+GROUP BY COALESCE(NULLIF(incident_type,''),'Unknown')
 ORDER BY n_i DESC
 LIMIT 10
 ");
@@ -121,16 +198,18 @@ SELECT ranked.barangay,
        ranked.cnt
 FROM (
 SELECT
-barangay,
-incident_type,
+COALESCE(NULLIF(barangay,''),'Unknown') barangay,
+COALESCE(NULLIF(incident_type,''),'Unknown') incident_type,
 COUNT(*) cnt,
 ROW_NUMBER() OVER(
- PARTITION BY barangay
+ PARTITION BY COALESCE(NULLIF(barangay,''),'Unknown')
  ORDER BY COUNT(*) DESC
 ) rn
 FROM incident_reports
 $where
-GROUP BY barangay,incident_type
+GROUP BY
+COALESCE(NULLIF(barangay,''),'Unknown'),
+COALESCE(NULLIF(incident_type,''),'Unknown')
 ) ranked
 WHERE rn=1
 ORDER BY cnt DESC
@@ -145,7 +224,7 @@ while($row=$stmt->fetch(PDO::FETCH_ASSOC)){
 
 $barangayPatterns[]=[
  "barangay"=>$row["barangay"] ?: "Unknown",
- "incident_type"=>$row["incident_type"],
+ "incident_type"=>$row["incident_type"] ?: "Unknown",
  "count"=>(int)$row["cnt"]
 ];
 
@@ -158,11 +237,11 @@ $barangayPatterns[]=[
 
 $stmt=$pdo->prepare("
 SELECT
-incident_hour hr,
+COALESCE(incident_hour, HOUR($dateExpr)) hr,
 COUNT(*) c
 FROM incident_reports
 $where
-GROUP BY incident_hour
+GROUP BY COALESCE(incident_hour, HOUR($dateExpr))
 ORDER BY hr
 ");
 
@@ -196,12 +275,12 @@ $weekMap=[
 
 $stmt=$pdo->prepare("
 SELECT
-incident_weekday wd,
+COALESCE(incident_weekday, WEEKDAY($dateExpr)) wd,
 COUNT(*) c
 FROM incident_reports
 $where
-GROUP BY incident_weekday
-ORDER BY incident_weekday
+GROUP BY COALESCE(incident_weekday, WEEKDAY($dateExpr))
+ORDER BY wd
 ");
 
 $stmt->execute($params);
@@ -253,11 +332,14 @@ out(200,[
 "ok"=>true,
 "scope"=>$scope,
 
+"filter_mode"=>$filterMode,
+"period_label"=>$periodLabel,
+
 "formula"=>"fi=ni/N",
 
 "total"=>$N,
 
-"days"=>$days,
+"days"=>$filterMode === "days" ? $days : null,
 
 "by_type"=>$byType,
 

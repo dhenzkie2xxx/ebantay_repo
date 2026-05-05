@@ -5,6 +5,12 @@ require_once __DIR__ . "/hotspot_lib.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
+function is_valid_date_ymd($date){
+  if(!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return false;
+  [$y, $m, $d] = array_map("intval", explode("-", $date));
+  return checkdate($m, $d, $y);
+}
+
 function map_feed_resolve_weight(array $r): float {
   if (
     isset($r["severity_weight"]) &&
@@ -31,9 +37,80 @@ function map_feed_resolve_weight(array $r): float {
 try {
   $scope = admin_scope_from_auth($pdo, $AUTH_USER);
 
+  /*
+  |--------------------------------------------------------------------------
+  | FILTER MODE
+  |--------------------------------------------------------------------------
+  | Dashboard behavior:
+  |   ?days=30
+  |
+  | DataAnalytics behavior:
+  |   ?mode=year&year=2026
+  |   ?mode=custom&from=2026-01-01&to=2026-05-06
+  |--------------------------------------------------------------------------
+  */
+
+  $mode = $_GET["mode"] ?? "";
+  $year = $_GET["year"] ?? "";
+  $from = $_GET["from"] ?? "";
+  $to = $_GET["to"] ?? "";
+
   $days = (int)($_GET["days"] ?? 30);
   if ($days < 1) $days = 30;
   if ($days > 365) $days = 365;
+
+  $dateExpr = "COALESCE(ir.date_reported, ir.created_at)";
+  $verifiedDateSql = "";
+  $verifiedParams = [];
+
+  $filterMode = "days";
+  $periodLabel = "Last " . $days . " days";
+
+  if ($mode === "year" && preg_match('/^\d{4}$/', (string)$year)) {
+    $filterMode = "year";
+    $year = (int)$year;
+
+    $verifiedDateSql = "
+      AND $dateExpr >= :year_start
+      AND $dateExpr < :year_end
+    ";
+
+    $verifiedParams[":year_start"] = $year . "-01-01 00:00:00";
+    $verifiedParams[":year_end"] = ($year + 1) . "-01-01 00:00:00";
+
+    $periodLabel = "Year " . $year;
+
+  } elseif ($mode === "custom" && is_valid_date_ymd($from) && is_valid_date_ymd($to)) {
+    if (strtotime($from) > strtotime($to)) {
+      http_response_code(400);
+      echo json_encode([
+        "ok" => false,
+        "message" => "Invalid date range. From date must not be later than To date."
+      ]);
+      exit;
+    }
+
+    $filterMode = "custom";
+
+    $verifiedDateSql = "
+      AND $dateExpr >= :date_from
+      AND $dateExpr < DATE_ADD(:date_to, INTERVAL 1 DAY)
+    ";
+
+    $verifiedParams[":date_from"] = $from . " 00:00:00";
+    $verifiedParams[":date_to"] = $to . " 00:00:00";
+
+    $periodLabel = $from . " to " . $to;
+
+  } else {
+    $filterMode = "days";
+
+    $verifiedDateSql = "
+      AND $dateExpr >= (UTC_TIMESTAMP() - INTERVAL :verified_days DAY)
+    ";
+
+    $verifiedParams[":verified_days"] = $days;
+  }
 
   /* ---------------- HOTSPOTS ---------------- */
 
@@ -46,16 +123,39 @@ try {
     $cityFilter = trim((string)($scope["station_city_municipality"] ?? ""));
   }
 
+  /*
+    IMPORTANT:
+    get_computed_hotspots() currently accepts days, not exact date range.
+    Dashboard keeps days behavior.
+    DataAnalytics year/custom uses an equivalent day window without changing hotspot_lib.php yet.
+  */
+  $hotspotDays = $days;
+
+  if ($filterMode === "year") {
+    $hotspotDays = 365;
+  }
+
+  if ($filterMode === "custom" && isset($verifiedParams[":date_from"], $verifiedParams[":date_to"])) {
+    $diffDays = (strtotime($verifiedParams[":date_to"]) - strtotime($verifiedParams[":date_from"])) / 86400;
+    $hotspotDays = max(7, min(365, (int)$diffDays + 1));
+  }
+
   $hotspots = get_computed_hotspots(
-    $pdo,
-    $days,
-    $provinceFilter ?: null,
-    $cityFilter ?: null,
-    $hotspotRole,
-    null
-  );
+  $pdo,
+  $hotspotDays,
+  $provinceFilter ?: null,
+  $cityFilter ?: null,
+  $hotspotRole,
+  null,
+  $filterMode === "custom" || $filterMode === "year" ? ($filterMode === "year" ? $year . "-01-01" : $from) : null,
+  $filterMode === "custom" || $filterMode === "year" ? ($filterMode === "year" ? $year . "-12-31" : $to) : null
+);
 
   /* ------------ PANIC QUEUE ------------ */
+  /*
+    Keep all active panic requests.
+    This should not be limited by analytics date range because active panic requests are operational.
+  */
 
   $panicParams = [];
   $panicWhere = "
@@ -103,10 +203,6 @@ try {
 
   /* -------- VERIFIED INCIDENTS (SEVERITY HEATMAP) -------- */
 
-  $verifiedParams = [
-    ":verified_days" => $days
-  ];
-
   $verifiedWhere = "
     WHERE ir.verification_status = 'VERIFIED'
       AND ir.incident_phase IN (
@@ -117,7 +213,7 @@ try {
       )
       AND ir.lat IS NOT NULL
       AND ir.lng IS NOT NULL
-      AND ir.date_reported >= (UTC_TIMESTAMP() - INTERVAL :verified_days DAY)
+      $verifiedDateSql
   ";
 
   $verifiedWhere .= scope_where_clause(
@@ -159,7 +255,7 @@ try {
       )
       AND ct.is_active = 1
     $verifiedWhere
-    ORDER BY ir.created_at DESC
+    ORDER BY COALESCE(ir.date_reported, ir.created_at) DESC
     LIMIT 1000
   ");
 
@@ -167,6 +263,10 @@ try {
   $verified = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   /* -------- PENDING -------- */
+  /*
+    Keep pending reports all-time.
+    These are operational records, not historical analytics records.
+  */
 
   $pendingParams = [];
 
@@ -218,7 +318,13 @@ try {
     "ok" => true,
     "scope" => $scope,
     "filters" => [
-      "days" => $days
+      "mode" => $filterMode,
+      "days" => $filterMode === "days" ? $days : null,
+      "year" => $filterMode === "year" ? (int)$year : null,
+      "from" => $filterMode === "custom" ? $from : null,
+      "to" => $filterMode === "custom" ? $to : null,
+      "period_label" => $periodLabel,
+      "hotspot_days" => $hotspotDays
     ],
 
     "hotspots" => $hotspots,

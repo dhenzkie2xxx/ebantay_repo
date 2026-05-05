@@ -17,6 +17,12 @@ function hotspot_normalize_scope_value($value): ?string {
   return $value === "" ? null : $value;
 }
 
+function hotspot_is_valid_date_ymd(?string $date): bool {
+  if (!$date || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return false;
+  [$y, $m, $d] = array_map("intval", explode("-", $date));
+  return checkdate($m, $d, $y);
+}
+
 /**
  * Rule-based crime severity weight.
  * This follows a Crime Harm Index / Crime Severity Score style weighting:
@@ -274,7 +280,9 @@ function hotspot_incident_rows(
   ?string $provinceFilter = null,
   ?string $cityFilter = null,
   string $role = "public",
-  ?int $userId = null
+  ?int $userId = null,
+  ?string $dateFrom = null,
+  ?string $dateTo = null
 ): array {
   $sql = "
     SELECT
@@ -288,7 +296,7 @@ function hotspot_incident_rows(
       province,
       city_municipality,
       barangay,
-      date_reported
+      COALESCE(date_reported, created_at) AS date_reported
     FROM incident_reports
     WHERE
       lat IS NOT NULL
@@ -300,9 +308,27 @@ function hotspot_incident_rows(
         'UNDER_INVESTIGATION',
         'FILED_IN_COURT'
       )
-      AND date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
   ";
-  $params = [$days];
+
+  $params = [];
+
+  if (
+    hotspot_is_valid_date_ymd($dateFrom) &&
+    hotspot_is_valid_date_ymd($dateTo)
+  ) {
+    $sql .= "
+      AND COALESCE(date_reported, created_at) >= ?
+      AND COALESCE(date_reported, created_at) < DATE_ADD(?, INTERVAL 1 DAY)
+    ";
+    $params[] = $dateFrom . " 00:00:00";
+    $params[] = $dateTo . " 00:00:00";
+  } else {
+    $days = max(1, min(3650, $days));
+    $sql .= "
+      AND COALESCE(date_reported, created_at) >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+    ";
+    $params[] = $days;
+  }
 
   hotspot_append_incident_scope_filter($sql, $params, $role, $provinceFilter, $cityFilter, $userId);
 
@@ -317,7 +343,9 @@ function hotspot_panic_rows(
   ?string $provinceFilter = null,
   ?string $cityFilter = null,
   string $role = "public",
-  ?int $userId = null
+  ?int $userId = null,
+  ?string $dateFrom = null,
+  ?string $dateTo = null
 ): array {
   $sql = "
     SELECT
@@ -336,9 +364,27 @@ function hotspot_panic_rows(
       lat IS NOT NULL
       AND lng IS NOT NULL
       AND status <> 'resolved'
-      AND created_at >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
   ";
-  $params = [$days];
+
+  $params = [];
+
+  if (
+    hotspot_is_valid_date_ymd($dateFrom) &&
+    hotspot_is_valid_date_ymd($dateTo)
+  ) {
+    $sql .= "
+      AND created_at >= ?
+      AND created_at < DATE_ADD(?, INTERVAL 1 DAY)
+    ";
+    $params[] = $dateFrom . " 00:00:00";
+    $params[] = $dateTo . " 00:00:00";
+  } else {
+    $days = max(1, min(365, $days));
+    $sql .= "
+      AND created_at >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
+    ";
+    $params[] = $days;
+  }
 
   hotspot_append_panic_scope_filter($sql, $params, $role, $provinceFilter, $cityFilter, $userId);
 
@@ -353,7 +399,9 @@ function get_computed_hotspots(
   ?string $provinceFilter = null,
   ?string $cityFilter = null,
   string $role = "public",
-  ?int $userId = null
+  ?int $userId = null,
+  ?string $dateFrom = null,
+  ?string $dateTo = null
 ): array {
   $days = max(1, min(365, $days));
   $provinceFilter = hotspot_normalize_scope_value($provinceFilter);
@@ -361,12 +409,65 @@ function get_computed_hotspots(
 
   $hotspots = hotspot_base_rows($pdo);
 
-  // Hotspot explanation metrics use historical verified incidents.
-  // Dashboard heatmap can still use last 30 days from dashboard_map_feed.php.
-  $incidentRows = hotspot_incident_rows($pdo, 3650, $provinceFilter, $cityFilter, $role, $userId);
+  /*
+  |--------------------------------------------------------------------------
+  | HOTSPOT INCIDENT DATASET
+  |--------------------------------------------------------------------------
+  | Default / Dashboard:
+  |   Uses 3650 days for historical hotspot explanation.
+  |
+  | DataAnalytics:
+  |   If dateFrom/dateTo are passed, hotspot explanation metrics use
+  |   only the selected analytics period.
+  |--------------------------------------------------------------------------
+  */
 
-  // Panic requests remain period-based.
-  $panicRows = hotspot_panic_rows($pdo, $days, $provinceFilter, $cityFilter, $role, $userId);
+  if (
+    hotspot_is_valid_date_ymd($dateFrom) &&
+    hotspot_is_valid_date_ymd($dateTo)
+  ) {
+    $incidentRows = hotspot_incident_rows(
+      $pdo,
+      $days,
+      $provinceFilter,
+      $cityFilter,
+      $role,
+      $userId,
+      $dateFrom,
+      $dateTo
+    );
+
+    $panicRows = hotspot_panic_rows(
+      $pdo,
+      $days,
+      $provinceFilter,
+      $cityFilter,
+      $role,
+      $userId,
+      $dateFrom,
+      $dateTo
+    );
+  } else {
+    // Historical incident explanation for Dashboard.
+    $incidentRows = hotspot_incident_rows(
+      $pdo,
+      3650,
+      $provinceFilter,
+      $cityFilter,
+      $role,
+      $userId
+    );
+
+    // Panic requests remain period-based.
+    $panicRows = hotspot_panic_rows(
+      $pdo,
+      $days,
+      $provinceFilter,
+      $cityFilter,
+      $role,
+      $userId
+    );
+  }
 
   $out = [];
 
@@ -404,7 +505,10 @@ function get_computed_hotspots(
           $maxCrimeWeight = $weight;
         }
 
-        if ($lastDetected === null || strtotime($r["date_reported"]) > strtotime($lastDetected)) {
+        if (
+          $lastDetected === null ||
+          strtotime($r["date_reported"]) > strtotime($lastDetected)
+        ) {
           $lastDetected = $r["date_reported"];
         }
       }
@@ -417,7 +521,10 @@ function get_computed_hotspots(
         $panicCount++;
         $panicScore += (($p["level"] ?? "") === "urgent") ? 2 : 1;
 
-        if ($lastDetected === null || strtotime($p["created_at"]) > strtotime($lastDetected)) {
+        if (
+          $lastDetected === null ||
+          strtotime($p["created_at"]) > strtotime($lastDetected)
+        ) {
           $lastDetected = $p["created_at"];
         }
       }
