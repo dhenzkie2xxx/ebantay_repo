@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . "/require_admin.php";
+require_once __DIR__ . "/db.php"; // or your DB connection file
 require_once __DIR__ . "/hotspot_lib.php";
 
 header("Content-Type: application/json; charset=UTF-8");
