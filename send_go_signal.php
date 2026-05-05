@@ -138,7 +138,7 @@ try {
 
   if ($sourceType === "incident") {
     $srcStmt = $pdo->prepare("
-      SELECT id, title, incident_type, lat, lng, assigned_station_id
+      SELECT id, title, incident_type, lat, lng, assigned_station_id, incident_phase
       FROM incident_reports
       WHERE id = ?
         AND assigned_station_id = ?
@@ -146,7 +146,7 @@ try {
     ");
   } else {
     $srcStmt = $pdo->prepare("
-      SELECT id, level, lat, lng, assigned_station_id
+      SELECT id, level, lat, lng, assigned_station_id, status
       FROM panic_requests
       WHERE id = ?
         AND assigned_station_id = ?
@@ -190,11 +190,6 @@ try {
   $existingStmt = $pdo->prepare("
     SELECT
       id,
-      source_type,
-      source_id,
-      assigned_user_id,
-      assigned_station_id,
-      assignment_role,
       status,
       authorization_status,
       detected_distance_m,
@@ -213,6 +208,13 @@ try {
   if ($existing) {
     $assignmentId = (int)$existing["id"];
 
+    $oldAssignmentValues = [
+      "status" => $existing["status"],
+      "authorization_status" => $existing["authorization_status"],
+      "detected_distance_m" => $existing["detected_distance_m"],
+      "notes" => $existing["notes"]
+    ];
+
     $upd = $pdo->prepare("
       UPDATE responder_assignments
       SET
@@ -224,7 +226,6 @@ try {
         notes = ?
       WHERE id = ?
     ");
-
     $upd->execute([
       (int)$admin["id"],
       $distanceM,
@@ -232,6 +233,8 @@ try {
       $assignmentId
     ]);
   } else {
+    $oldAssignmentValues = null;
+
     $ins = $pdo->prepare("
       INSERT INTO responder_assignments (
         source_type,
@@ -326,8 +329,9 @@ try {
       "incident_id" => $sourceType === "incident" ? $sourceId : null,
       "panic_id" => $sourceType === "panic" ? $sourceId : null,
       "target_user_id" => $policeUserId,
-      "old_values" => $existing ?: null,
+      "old_values" => $oldAssignmentValues,
       "new_values" => [
+        "id" => $assignmentId,
         "source_type" => $sourceType,
         "source_id" => $sourceId,
         "assigned_user_id" => $policeUserId,
@@ -338,7 +342,8 @@ try {
         "authorized_by" => (int)$admin["id"],
         "detected_distance_m" => $distanceM,
         "notes" => $notes !== "" ? $notes : null,
-        "police_duty_status" => "enroute"
+        "police_duty_status" => "enroute",
+        "source_status" => $sourceType === "incident" ? "UNDER_VERIFICATION" : "ack"
       ]
     ]
   );

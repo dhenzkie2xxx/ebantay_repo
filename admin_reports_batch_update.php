@@ -22,20 +22,11 @@ $caseStatus = strtoupper(trim((string)($data["case_status"] ?? "")));
 $notes = trim((string)($data["admin_notes"] ?? ""));
 
 $allowedVerification = ["PENDING", "VERIFIED", "FALSE_REPORT", "DUPLICATE"];
-$allowedPhase = [
-  "REPORTED",
-  "UNDER_VERIFICATION",
-  "BLOTTERED",
-  "UNDER_INVESTIGATION",
-  "FILED_IN_COURT",
-  "RESOLVED",
-  "REJECTED"
-];
+$allowedPhase = ["REPORTED", "UNDER_VERIFICATION", "BLOTTERED", "UNDER_INVESTIGATION", "FILED_IN_COURT", "RESOLVED", "REJECTED"];
 $allowedCase = ["OPEN", "CLEARED", "SOLVED", "CLOSED", "UNFOUNDED"];
 
 if (
-  !is_array($ids) ||
-  count($ids) === 0 ||
+  !is_array($ids) || count($ids) === 0 ||
   !in_array($verificationStatus, $allowedVerification, true) ||
   !in_array($incidentPhase, $allowedPhase, true) ||
   !in_array($caseStatus, $allowedCase, true)
@@ -43,14 +34,12 @@ if (
   out(400, ["ok" => false, "message" => "Invalid payload"]);
 }
 
-$ids = array_values(array_unique(array_filter(array_map("intval", $ids), fn($v) => $v > 0)));
-
+$ids = array_values(array_unique(array_filter(array_map('intval', $ids), fn($v) => $v > 0)));
 if (!$ids) {
   out(400, ["ok" => false, "message" => "No valid IDs"]);
 }
 
 $adminId = (int)($AUTH_USER["id"] ?? 0);
-$stationId = (int)($AUTH_USER["station_id"] ?? 0);
 $now = gmdate("Y-m-d H:i:s");
 
 function queue_user_notification(
@@ -109,66 +98,40 @@ try {
       lng,
       verification_status,
       incident_phase,
-      case_status,
-      admin_notes,
-      reviewed_by,
-      reviewed_at,
-      resolved_at,
-      assigned_station_id
+      case_status
     FROM incident_reports
     WHERE id IN ($ph)
-      AND assigned_station_id = ?
   ");
-
-  $sel->execute([...$ids, $stationId]);
+  $sel->execute($ids);
   $oldRows = $sel->fetchAll(PDO::FETCH_ASSOC);
 
   if (!$oldRows) {
     $pdo->rollBack();
     out(404, [
       "ok" => false,
-      "message" => "No incidents found under your station"
+      "message" => "No incidents found"
     ]);
   }
 
-  $foundIds = array_map(fn($r) => (int)$r["id"], $oldRows);
-  $phFound = implode(",", array_fill(0, count($foundIds), "?"));
-
   $upd = $pdo->prepare("
     UPDATE incident_reports
-    SET
-      verification_status = ?,
-      incident_phase = ?,
-      case_status = ?,
-      admin_notes = ?,
-      reviewed_by = ?,
-      reviewed_at = CASE
-        WHEN ? = 'VERIFIED' AND reviewed_at IS NULL THEN ?
-        ELSE reviewed_at
-      END,
-      resolved_at = CASE
-        WHEN ? = 'RESOLVED' THEN ?
-        ELSE resolved_at
-      END
-    WHERE id IN ($phFound)
-      AND assigned_station_id = ?
+    SET verification_status = ?,
+        incident_phase = ?,
+        case_status = ?,
+        admin_notes = CASE WHEN ? <> '' THEN ? ELSE admin_notes END,
+        reviewed_by = ?,
+        reviewed_at = CASE
+          WHEN reviewed_at IS NULL AND ? <> 'PENDING' THEN ?
+          ELSE reviewed_at
+        END,
+        resolved_at = CASE
+          WHEN ? = 'RESOLVED' OR ? = 'CLOSED' THEN ?
+          ELSE resolved_at
+        END
+    WHERE id = ?
   ");
 
-  $upd->execute([
-    $verificationStatus,
-    $incidentPhase,
-    $caseStatus,
-    $notes,
-    $adminId,
-    $verificationStatus,
-    $now,
-    $incidentPhase,
-    $now,
-    ...$foundIds,
-    $stationId
-  ]);
-
-  $historyStmt = $pdo->prepare("
+  $hist = $pdo->prepare("
     INSERT INTO incident_status_history
     (
       incident_id,
@@ -184,60 +147,93 @@ try {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   ");
 
-  foreach ($oldRows as $old) {
-    $incidentId = (int)$old["id"];
-    $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
+  foreach ($oldRows as $row) {
+    $oldVerification = strtoupper((string)($row["verification_status"] ?? ""));
+    $oldPhase = strtoupper((string)($row["incident_phase"] ?? ""));
+    $oldCase = strtoupper((string)($row["case_status"] ?? ""));
 
-    $historyStmt->execute([
-      $incidentId,
-      $old["incident_phase"],
+    $upd->execute([
+      $verificationStatus,
       $incidentPhase,
-      $old["case_status"],
       $caseStatus,
-      $old["verification_status"],
+      $notes, $notes,
+      $adminId,
+      $verificationStatus, $now,
+      $incidentPhase, $caseStatus, $now,
+      $row["id"]
+    ]);
+
+    $hist->execute([
+      $row["id"],
+      $row["incident_phase"],
+      $incidentPhase,
+      $row["case_status"],
+      $caseStatus,
+      $row["verification_status"],
       $verificationStatus,
       $notes,
       $adminId
     ]);
 
+    $reporterUserId = (int)($row["reporter_user_id"] ?? 0);
+
+    write_audit_log(
+      $pdo,
+      $AUTH_USER,
+      "INCIDENT_BATCH_UPDATED",
+      "incident_report",
+      (int)$row["id"],
+      "Station Admin updated incident report through batch update.",
+      [
+        "module" => "incident_reports",
+        "incident_id" => (int)$row["id"],
+        "target_user_id" => $reporterUserId > 0 ? $reporterUserId : null,
+        "old_values" => [
+          "verification_status" => $row["verification_status"],
+          "incident_phase" => $row["incident_phase"],
+          "case_status" => $row["case_status"]
+        ],
+        "new_values" => [
+          "verification_status" => $verificationStatus,
+          "incident_phase" => $incidentPhase,
+          "case_status" => $caseStatus,
+          "admin_notes" => $notes !== "" ? $notes : null,
+          "reviewed_by" => $adminId
+        ]
+      ]
+    );
+
     if (
       $verificationStatus === "FALSE_REPORT" &&
-      strtoupper((string)$old["verification_status"]) !== "FALSE_REPORT" &&
+      $oldVerification !== "FALSE_REPORT" &&
       $reporterUserId > 0
     ) {
       flag_user_after_false_report(
         $pdo,
         $reporterUserId,
-        $incidentId,
+        (int)$row["id"],
         $adminId
       );
     }
 
     $changed =
-      strtoupper((string)$old["verification_status"]) !== $verificationStatus ||
-      strtoupper((string)$old["incident_phase"]) !== $incidentPhase ||
-      strtoupper((string)$old["case_status"]) !== $caseStatus;
+      $oldVerification !== $verificationStatus ||
+      $oldPhase !== $incidentPhase ||
+      $oldCase !== $caseStatus;
 
     if ($reporterUserId > 0 && $changed) {
-      $incidentTitle = trim((string)($old["title"] ?? ""));
-      if ($incidentTitle === "") {
-        $incidentTitle = "Untitled Incident";
-      }
+      $incidentTitle = trim((string)($row["title"] ?? ""));
+      if ($incidentTitle === "") $incidentTitle = "Untitled Incident";
 
       $title = "Incident Report Update";
       $message = "Your reported incident \"{$incidentTitle}\" was updated. Verification: {$verificationStatus}, Phase: {$incidentPhase}, Case: {$caseStatus}.";
-
       if ($notes !== "") {
         $message .= " Admin note: {$notes}";
       }
 
       $severity = "MEDIUM";
-      if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") {
-        $severity = "LOW";
-      }
-      if ($verificationStatus === "FALSE_REPORT" || $incidentPhase === "REJECTED") {
-        $severity = "HIGH";
-      }
+      if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") $severity = "LOW";
+      if ($verificationStatus === "FALSE_REPORT" || $incidentPhase === "REJECTED") $severity = "HIGH";
 
       queue_user_notification(
         $pdo,
@@ -246,64 +242,18 @@ try {
         $title,
         $message,
         null,
-        $incidentId,
+        (int)$row["id"],
         $severity
       );
     }
+  }
 
-    hotspot_refresh_incident_link($pdo, $incidentId);
+  foreach ($oldRows as $row) {
+    hotspot_refresh_incident_link($pdo, (int)$row["id"]);
 
-    $newValues = [
-      "verification_status" => $verificationStatus,
-      "incident_phase" => $incidentPhase,
-      "case_status" => $caseStatus,
-      "admin_notes" => $notes,
-      "reviewed_by" => $adminId,
-      "reviewed_at" => ($verificationStatus === "VERIFIED" && empty($old["reviewed_at"]))
-        ? $now
-        : $old["reviewed_at"],
-      "resolved_at" => ($incidentPhase === "RESOLVED")
-        ? $now
-        : $old["resolved_at"]
-    ];
-
-    $auditAction = "INCIDENT_BATCH_UPDATED";
-
-    if ($verificationStatus === "VERIFIED") {
-      $auditAction = "INCIDENT_BATCH_VERIFIED";
+    if ($row["lat"] !== null && $row["lng"] !== null) {
+      hotspot_refresh_nearby_links($pdo, (float)$row["lat"], (float)$row["lng"], 500);
     }
-
-    if ($verificationStatus === "FALSE_REPORT") {
-      $auditAction = "INCIDENT_BATCH_FALSE_REPORT_MARKED";
-    }
-
-    if ($verificationStatus === "DUPLICATE") {
-      $auditAction = "INCIDENT_BATCH_DUPLICATE_MARKED";
-    }
-
-    if ($incidentPhase === "REJECTED") {
-      $auditAction = "INCIDENT_BATCH_REJECTED";
-    }
-
-    if ($incidentPhase === "RESOLVED" || $caseStatus === "CLOSED") {
-      $auditAction = "INCIDENT_BATCH_RESOLVED";
-    }
-
-    write_audit_log(
-      $pdo,
-      $AUTH_USER,
-      $auditAction,
-      "incident_report",
-      $incidentId,
-      "Station Admin batch-updated an incident report status.",
-      [
-        "module" => "incident_reports",
-        "incident_id" => $incidentId,
-        "target_user_id" => $reporterUserId > 0 ? $reporterUserId : null,
-        "old_values" => $old,
-        "new_values" => $newValues
-      ]
-    );
   }
 
   hotspot_deactivate_orphan_hotspots($pdo);
@@ -313,14 +263,10 @@ try {
   out(200, [
     "ok" => true,
     "message" => "Batch update successful",
-    "updated_count" => count($oldRows),
-    "incident_ids" => $foundIds
+    "updated_count" => count($oldRows)
   ]);
-
 } catch (Throwable $e) {
-  if ($pdo->inTransaction()) {
-    $pdo->rollBack();
-  }
+  if ($pdo->inTransaction()) $pdo->rollBack();
 
   out(500, [
     "ok" => false,

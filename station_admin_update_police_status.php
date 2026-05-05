@@ -65,29 +65,27 @@ try {
     ]);
   }
 
-  $policeUserId = (int)$policeUserId;
-
   $stmt = $pdo->prepare("
     SELECT
       id,
       firstname,
       lastname,
-      username,
       email,
+      username,
       station_id,
       role,
-      account_status,
       valid,
-      duty_status,
-      last_seen_at
+      account_status,
+      duty_status
     FROM users
     WHERE id = ?
       AND role = 'police_on_field'
       AND station_id = ?
     LIMIT 1
   ");
+
   $stmt->execute([
-    $policeUserId,
+    (int)$policeUserId,
     (int)$admin["station_id"]
   ]);
 
@@ -114,6 +112,9 @@ try {
       "account_status" => "disabled",
       "duty_status" => "offline"
     ];
+
+    $auditAction = "POLICE_ACCOUNT_DISABLED";
+    $auditDescription = "Station Admin disabled a Police on Field account.";
   } else {
     $update = $pdo->prepare("
       UPDATE users
@@ -130,23 +131,28 @@ try {
       "valid" => "valid",
       "duty_status" => "offline"
     ];
+
+    $auditAction = "POLICE_ACCOUNT_ENABLED";
+    $auditDescription = "Station Admin enabled a Police on Field account.";
   }
 
-  $update->execute([$policeUserId]);
+  $update->execute([(int)$policeUserId]);
 
   write_audit_log(
     $pdo,
     $admin,
-    $action === "disable" ? "POLICE_ACCOUNT_DISABLED" : "POLICE_ACCOUNT_ENABLED",
+    $auditAction,
     "user",
-    $policeUserId,
-    $action === "disable"
-      ? "Station Admin disabled a Police on Field account."
-      : "Station Admin enabled a Police on Field account.",
+    (int)$policeUserId,
+    $auditDescription,
     [
       "module" => "police_on_field",
-      "target_user_id" => $policeUserId,
-      "old_values" => $police,
+      "target_user_id" => (int)$policeUserId,
+      "old_values" => [
+        "account_status" => $police["account_status"],
+        "valid" => $police["valid"],
+        "duty_status" => $police["duty_status"]
+      ],
       "new_values" => $newValues
     ]
   );
@@ -156,7 +162,7 @@ try {
     "message" => $action === "disable"
       ? "Police on Field account disabled."
       : "Police on Field account enabled.",
-    "police_user_id" => $policeUserId,
+    "police_user_id" => (int)$policeUserId,
     "action" => $action
   ]);
 

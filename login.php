@@ -24,32 +24,6 @@ if ($username === "" || $password === "") {
   exit;
 }
 
-function audit_successful_login(PDO $pdo, array $user): void {
-  if (!in_array($user["role"], ["admin", "police_on_field", "super_admin"], true)) {
-    return;
-  }
-
-  write_audit_log(
-    $pdo,
-    $user,
-    "LOGIN",
-    "user_session",
-    (int)$user["id"],
-    "User logged in.",
-    [
-      "module" => "auth",
-      "target_user_id" => (int)$user["id"],
-      "new_values" => [
-        "user_id" => (int)$user["id"],
-        "username" => $user["username"] ?? null,
-        "role" => $user["role"] ?? null,
-        "station_id" => $user["station_id"] ?? null,
-        "station_name" => $user["station_name"] ?? null
-      ]
-    ]
-  );
-}
-
 try {
   $stmt = $pdo->prepare("
     SELECT
@@ -138,6 +112,30 @@ try {
   $upd = $pdo->prepare("UPDATE users SET api_token = ?, api_token_expires = ? WHERE id = ?");
   $upd->execute([$token, $expires, $user["id"]]);
 
+  if (in_array($user["role"], ["admin", "police_on_field"], true)) {
+    write_audit_log(
+      $pdo,
+      $user,
+      "LOGIN_SUCCESS",
+      "user",
+      (int)$user["id"],
+      $user["role"] === "admin"
+        ? "Station Admin logged in."
+        : "Police on Field logged in.",
+      [
+        "module" => "authentication",
+        "target_user_id" => (int)$user["id"],
+        "new_values" => [
+          "user_id" => (int)$user["id"],
+          "username" => $user["username"],
+          "role" => $user["role"],
+          "station_id" => !empty($user["station_id"]) ? (int)$user["station_id"] : null,
+          "login_at" => date("Y-m-d H:i:s")
+        ]
+      ]
+    );
+  }
+
   if ($user["role"] === "citizen") {
     echo json_encode([
       "ok" => true,
@@ -200,8 +198,6 @@ try {
       $message = "Your police station is not approved yet.";
     }
 
-    audit_successful_login($pdo, $user);
-
     echo json_encode([
       "ok" => true,
       "message" => $message,
@@ -217,8 +213,7 @@ try {
         "username" => $user["username"],
         "role" => $user["role"],
         "account_status" => $accountStatus
-      ], auth_station_scope($user)),
-      "rejected_reason" => $user["rejected_reason"] ?? null
+      ], auth_station_scope($user))
     ]);
     exit;
   }
@@ -227,36 +222,6 @@ try {
     $stationStatus = $user["station_verification_status"] ?? null;
     $stationActive = (int)($user["station_is_active"] ?? 0);
     $accountStatus = $user["account_status"] ?? "pending";
-
-    if (($user["valid"] ?? "unvalid") !== "valid") {
-      http_response_code(403);
-      echo json_encode([
-        "ok" => false,
-        "code" => "ACCOUNT_NOT_VALID",
-        "message" => "Police on Field account is not valid."
-      ]);
-      exit;
-    }
-
-    if ($accountStatus === "disabled") {
-      http_response_code(403);
-      echo json_encode([
-        "ok" => false,
-        "code" => "ACCOUNT_DISABLED",
-        "message" => "Your Police on Field account is disabled."
-      ]);
-      exit;
-    }
-
-    if (strtolower((string)($user["account_flag_status"] ?? "none")) === "suspended") {
-      http_response_code(403);
-      echo json_encode([
-        "ok" => false,
-        "code" => "ACCOUNT_SUSPENDED",
-        "message" => "Your Police on Field account is suspended."
-      ]);
-      exit;
-    }
 
     if (
       empty($user["station_id"]) ||
@@ -272,8 +237,6 @@ try {
       ]);
       exit;
     }
-
-    audit_successful_login($pdo, $user);
 
     echo json_encode([
       "ok" => true,
@@ -293,8 +256,6 @@ try {
     ]);
     exit;
   }
-
-  audit_successful_login($pdo, $user);
 
   echo json_encode([
     "ok" => true,

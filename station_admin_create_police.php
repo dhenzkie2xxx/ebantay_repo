@@ -65,10 +65,10 @@ try {
   }
 
   $firstname = trim((string)($data["firstname"] ?? ""));
-  $lastname = trim((string)($data["lastname"] ?? ""));
-  $email = trim((string)($data["email"] ?? ""));
-  $username = trim((string)($data["username"] ?? ""));
-  $password = trim((string)($data["password"] ?? ""));
+  $lastname  = trim((string)($data["lastname"] ?? ""));
+  $email     = trim((string)($data["email"] ?? ""));
+  $username  = trim((string)($data["username"] ?? ""));
+  $password  = trim((string)($data["password"] ?? ""));
 
   if (
     $firstname === "" ||
@@ -92,16 +92,16 @@ try {
   ");
   $chk->execute([$username, $email]);
 
-  if ($chk->fetch(PDO::FETCH_ASSOC)) {
+  if ($chk->fetch()) {
     out(409, [
       "ok" => false,
       "message" => "Username or email already exists."
     ]);
   }
 
-  $pdo->beginTransaction();
-
   $hash = password_hash($password, PASSWORD_DEFAULT);
+
+  $pdo->beginTransaction();
 
   $stmt = $pdo->prepare("
     INSERT INTO users (
@@ -135,8 +135,8 @@ try {
     $username,
     $hash,
     "police_on_field",
-    $user["station_id"],
-    $user["id"]
+    (int)$user["station_id"],
+    (int)$user["id"]
   ]);
 
   $newId = (int)$pdo->lastInsertId();
@@ -158,25 +158,6 @@ try {
     $user["station_region"] ?? null
   ]);
 
-  $newValues = [
-    "id" => $newId,
-    "firstname" => $firstname,
-    "lastname" => $lastname,
-    "email" => $email,
-    "username" => $username,
-    "role" => "police_on_field",
-    "station_id" => (int)$user["station_id"],
-    "valid" => "valid",
-    "account_status" => "active",
-    "is_email_verified" => 1,
-    "approved_by" => (int)$user["id"],
-    "profile" => [
-      "city_municipality" => $user["station_city_municipality"] ?? null,
-      "province" => $user["station_province"] ?? null,
-      "region" => $user["station_region"] ?? null
-    ]
-  ];
-
   write_audit_log(
     $pdo,
     $user,
@@ -187,8 +168,24 @@ try {
     [
       "module" => "police_on_field",
       "target_user_id" => $newId,
-      "old_values" => null,
-      "new_values" => $newValues
+      "new_values" => [
+        "id" => $newId,
+        "firstname" => $firstname,
+        "lastname" => $lastname,
+        "email" => $email,
+        "username" => $username,
+        "role" => "police_on_field",
+        "station_id" => (int)$user["station_id"],
+        "valid" => "valid",
+        "account_status" => "active",
+        "is_email_verified" => 1,
+        "approved_by" => (int)$user["id"],
+        "profile" => [
+          "city_municipality" => $user["station_city_municipality"] ?? null,
+          "province" => $user["station_province"] ?? null,
+          "region" => $user["station_region"] ?? null
+        ]
+      ]
     ]
   );
 

@@ -83,21 +83,27 @@ try {
   $stationId = (int)$admin["station_id"];
   $announcementId = (int)$id;
 
-  /* 🔥 FETCH OLD VALUES */
-  $oldStmt = $pdo->prepare("
+  $check = $pdo->prepare("
     SELECT
       id,
+      station_id,
+      created_by,
       title,
       message,
+      region,
+      province,
+      city_municipality,
+      status,
       priority,
-      status
+      created_at,
+      updated_at
     FROM community_announcements
     WHERE id = ?
       AND station_id = ?
     LIMIT 1
   ");
-  $oldStmt->execute([$announcementId, $stationId]);
-  $old = $oldStmt->fetch(PDO::FETCH_ASSOC);
+  $check->execute([$announcementId, $stationId]);
+  $old = $check->fetch(PDO::FETCH_ASSOC);
 
   if (!$old) {
     out(404, [
@@ -127,7 +133,6 @@ try {
     $stationId
   ]);
 
-  /* 🔥 AUDIT WITH OLD + NEW */
   write_audit_log(
     $pdo,
     $admin,
@@ -137,7 +142,12 @@ try {
     "Station Admin updated a community announcement.",
     [
       "module" => "announcements",
-      "old_values" => $old,
+      "old_values" => [
+        "title" => $old["title"],
+        "message" => $old["message"],
+        "priority" => $old["priority"],
+        "status" => $old["status"]
+      ],
       "new_values" => [
         "title" => $title,
         "message" => $message,

@@ -80,10 +80,6 @@ try {
       ra.authorization_status,
       ra.status,
       ra.notes,
-      ra.detected_distance_m,
-      ra.proceed_requested_at,
-      ra.authorized_by,
-      ra.authorized_at,
 
       u.firstname,
       u.lastname,
@@ -212,7 +208,12 @@ try {
       "incident_id" => $assignment["source_type"] === "incident" ? (int)$assignment["source_id"] : null,
       "panic_id" => $assignment["source_type"] === "panic" ? (int)$assignment["source_id"] : null,
       "target_user_id" => (int)$assignment["assigned_user_id"],
-      "old_values" => $assignment,
+      "old_values" => [
+        "authorization_status" => $assignment["authorization_status"],
+        "status" => $assignment["status"],
+        "notes" => $assignment["notes"],
+        "police_duty_status" => $assignment["duty_status"]
+      ],
       "new_values" => [
         "authorization_status" => $newAuthStatus,
         "status" => $newAssignmentStatus,
