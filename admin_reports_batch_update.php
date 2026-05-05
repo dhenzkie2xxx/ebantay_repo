@@ -249,14 +249,8 @@ try {
   }
 
   foreach ($oldRows as $row) {
-    hotspot_refresh_incident_link($pdo, (int)$row["id"]);
-
-    if ($row["lat"] !== null && $row["lng"] !== null) {
-      hotspot_refresh_nearby_links($pdo, (float)$row["lat"], (float)$row["lng"], 500);
-    }
+    recalc_hotspots_after_incident_save($pdo, (int)$row["id"]);
   }
-
-  hotspot_deactivate_orphan_hotspots($pdo);
 
   $pdo->commit();
 
