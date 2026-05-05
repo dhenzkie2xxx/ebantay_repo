@@ -102,7 +102,19 @@ try {
     $color = hotspot_compute_color(count($cluster), 0, $severityTotal, $maxWeight);
     $riskLevel = hotspot_compute_risk_level($color);
 
-    $name = "Auto Hotspot - {$dominantBarangay} / Tangub City";
+    $crimeCounts = [];
+
+    foreach ($cluster as $c) {
+    $type = trim((string)($c["row"]["incident_type"] ?? ""));
+    if ($type === "") continue;
+
+    $crimeCounts[$type] = ($crimeCounts[$type] ?? 0) + 1;
+    }
+
+    arsort($crimeCounts);
+    $dominantCrime = array_key_first($crimeCounts) ?: "Mixed Crime";
+
+    $name = "{$dominantCrime} Hotspot - {$dominantBarangay}";
 
     $insert = $pdo->prepare("
       INSERT INTO crime_hotspots
