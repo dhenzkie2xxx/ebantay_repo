@@ -103,7 +103,7 @@ try {
 
   /* -------- VERIFIED INCIDENTS (SEVERITY HEATMAP) -------- */
 
-  $verifiedParams = [];
+  $verifiedParams = [$days];
 
   $verifiedWhere = "
     WHERE ir.verification_status = 'VERIFIED'
@@ -115,6 +115,7 @@ try {
       )
       AND ir.lat IS NOT NULL
       AND ir.lng IS NOT NULL
+      AND ir.date_reported >= (UTC_TIMESTAMP() - INTERVAL ? DAY)
   ";
 
   $verifiedWhere .= scope_where_clause(
