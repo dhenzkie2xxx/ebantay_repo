@@ -707,11 +707,21 @@ if (!function_exists("hotspot_auto_create_from_incident")) {
     $color = hotspot_compute_color($incidentCount, 0, $severityTotal, $maxWeight);
     $riskLevel = hotspot_compute_risk_level($color);
 
+    $crimeCounts = [];
+
+    foreach ($cluster as $c) {
+      $type = trim((string)($c["row"]["incident_type"] ?? ""));
+      if ($type === "") continue;
+
+      $crimeCounts[$type] = ($crimeCounts[$type] ?? 0) + 1;
+    }
+
+    arsort($crimeCounts);
+    $dominantCrime = array_key_first($crimeCounts) ?: "Mixed Crime";
+
     $name = trim(
-      "Auto Hotspot - " .
-      ($dominantBarangay ?: "Unknown Barangay") .
-      " / " .
-      ($base["city_municipality"] ?: "Unknown City")
+      "{$dominantCrime} Hotspot - " .
+      ($dominantBarangay ?: "Unknown Barangay")
     );
 
     $insert = $pdo->prepare("
