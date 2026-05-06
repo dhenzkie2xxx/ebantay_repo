@@ -60,6 +60,10 @@ try {
       ra.detected_distance_m,
       ra.backup_requested,
       ra.backup_requested_at,
+      ra.backup_admin_response,
+      ra.backup_response_notes,
+      ra.backup_responded_by,
+      ra.backup_responded_at,
       ra.outcome,
       ra.outcome_at,
       ra.notes,
@@ -148,6 +152,11 @@ try {
 
       "backup_requested" => (int)$r["backup_requested"] === 1,
       "backup_requested_at" => $r["backup_requested_at"],
+      "backup_admin_response" => $r["backup_admin_response"] ?? "pending",
+      "backup_response_notes" => $r["backup_response_notes"],
+      "backup_responded_by" => $r["backup_responded_by"] !== null ? (int)$r["backup_responded_by"] : null,
+      "backup_responded_at" => $r["backup_responded_at"],
+
       "outcome" => $r["outcome"],
       "outcome_at" => $r["outcome_at"],
       "notes" => $r["notes"],
