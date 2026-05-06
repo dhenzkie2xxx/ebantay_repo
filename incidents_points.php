@@ -158,6 +158,24 @@ function resolve_request_scope(PDO $pdo): array {
         ];
       }
 
+      if ($role === "police_on_field") {
+        $canon = canonicalize_scope_from_parts(
+          $pdo,
+          $user["station_region"] ?? null,
+          $user["station_province"] ?? null,
+          $user["station_city_municipality"] ?? null
+        );
+
+        return [
+          "source" => "auth",
+          "role" => "police_on_field",
+          "user_id" => (int)$user["id"],
+          "region" => $canon["region"] ?? normalize_scope_value($user["station_region"] ?? null),
+          "province" => $canon["province"] ?? normalize_scope_value($user["station_province"] ?? null),
+          "city_municipality" => $canon["city_municipality"] ?? normalize_scope_value($user["station_city_municipality"] ?? null),
+        ];
+      }
+
       if ($role === "citizen") {
         $queryProvince = normalize_scope_value($_GET["province"] ?? null);
         $queryCity = normalize_scope_value($_GET["city_municipality"] ?? null);
@@ -693,6 +711,85 @@ try {
           "level" => $r["level"] ?: "alert",
           "status" => $r["status"] ?: "new",
           "source" => "panic_request",
+        ];
+      }
+    }
+  }
+
+  if ($role === "police_on_field" && $userId !== null) {
+    $assignedSql = "
+      SELECT
+        ra.id AS assignment_id,
+        ra.source_type,
+        ra.source_id,
+        ra.authorization_status,
+        ra.status AS assignment_status,
+
+        ir.id AS incident_id,
+        ir.lat AS incident_lat,
+        ir.lng AS incident_lng,
+        ir.incident_type,
+        ir.verification_status,
+        ir.incident_phase,
+
+        p.id AS panic_id,
+        p.lat AS panic_lat,
+        p.lng AS panic_lng,
+        p.level,
+        p.status AS panic_status
+      FROM responder_assignments ra
+      LEFT JOIN incident_reports ir
+        ON ra.source_type = 'incident'
+       AND ir.id = ra.source_id
+      LEFT JOIN panic_requests p
+        ON ra.source_type = 'panic'
+       AND p.id = ra.source_id
+      WHERE ra.assigned_user_id = ?
+        AND ra.status <> 'cancelled'
+        AND ra.authorization_status IN (
+          'detected',
+          'requested_to_proceed',
+          'go_signal_sent',
+          'approved_to_proceed'
+        )
+      ORDER BY ra.assigned_at DESC
+      LIMIT 100
+    ";
+
+    $stmt = $pdo->prepare($assignedSql);
+    $stmt->execute([$userId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as $r) {
+      if ($r["source_type"] === "incident") {
+        if ($r["incident_lat"] === null || $r["incident_lng"] === null) continue;
+
+        $myMarkers[] = [
+          "id" => (int)$r["incident_id"],
+          "assignment_id" => (int)$r["assignment_id"],
+          "lat" => (float)$r["incident_lat"],
+          "lng" => (float)$r["incident_lng"],
+          "category" => $r["incident_type"] ?: "Assigned Incident",
+          "marker_type" => "assigned_report",
+          "verification_status" => $r["verification_status"] ?: "PENDING",
+          "incident_phase" => $r["incident_phase"] ?: "REPORTED",
+          "authorization_status" => $r["authorization_status"],
+          "source" => "assigned_incident",
+        ];
+      } else {
+        if ($r["panic_lat"] === null || $r["panic_lng"] === null) continue;
+
+        $myMarkers[] = [
+          "id" => (int)$r["panic_id"],
+          "assignment_id" => (int)$r["assignment_id"],
+          "lat" => (float)$r["panic_lat"],
+          "lng" => (float)$r["panic_lng"],
+          "category" => "Assigned Panic",
+          "marker_type" => "assigned_panic",
+          "level" => $r["level"] ?: "alert",
+          "status" => $r["panic_status"] ?: "new",
+          "authorization_status" => $r["authorization_status"],
+          "source" => "assigned_panic",
         ];
       }
     }
