@@ -89,18 +89,39 @@ try {
    * Fallback: city-only match.
    * Useful for HUCs / province naming mismatch.
    */
-  if (count($rows) === 0 && $city !== "") {
-    $fallbackStmt = $pdo->prepare("
-      SELECT b.canonical_name AS barangay
-      FROM location_barangays b
-      INNER JOIN location_cities c ON c.id = b.city_id
-      WHERE LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
-         OR LOWER(TRIM(c.canonical_name)) LIKE LOWER(TRIM(?))
-      ORDER BY b.canonical_name ASC
-    ");
-    $fallbackStmt->execute([$city, "%" . $city . "%"]);
-    $rows = $fallbackStmt->fetchAll(PDO::FETCH_ASSOC);
-  }
+ if (count($rows) === 0 && $city !== "") {
+  $cityCore = strtolower(trim($city));
+  $cityCore = str_replace("city of ", "", $cityCore);
+  $cityCore = str_replace(" city", "", $cityCore);
+  $cityCore = preg_replace('/\s+/', ' ', $cityCore);
+
+  $fallbackStmt = $pdo->prepare("
+    SELECT b.canonical_name AS barangay
+    FROM location_barangays b
+    INNER JOIN location_cities c ON c.id = b.city_id
+    WHERE
+      LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
+      OR LOWER(TRIM(c.canonical_name)) LIKE LOWER(TRIM(?))
+      OR LOWER(
+        TRIM(
+          REPLACE(
+            REPLACE(c.canonical_name, 'City of ', ''),
+            ' City',
+            ''
+          )
+        )
+      ) = LOWER(TRIM(?))
+    ORDER BY b.canonical_name ASC
+  ");
+
+  $fallbackStmt->execute([
+    $city,
+    "%" . $cityCore . "%",
+    $cityCore
+  ]);
+
+  $rows = $fallbackStmt->fetchAll(PDO::FETCH_ASSOC);
+}
 
   out(200, [
     "ok" => true,
