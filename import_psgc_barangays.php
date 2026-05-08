@@ -39,8 +39,8 @@ foreach ($headers as $i => $h) {
   $headerMap[$key] = $i;
 }
 
-function col(array $row, array $headerMap, array $possibleKeys): ?string {
-  foreach ($possibleKeys as $key) {
+function col(array $row, array $headerMap, array $keys): ?string {
+  foreach ($keys as $key) {
     if (array_key_exists($key, $headerMap)) {
       return clean_text($row[$headerMap[$key]] ?? null);
     }
@@ -48,42 +48,14 @@ function col(array $row, array $headerMap, array $possibleKeys): ?string {
   return null;
 }
 
-function retry_execute(PDOStatement $stmt, array $params, int $maxRetries = 3): void {
-  $attempt = 0;
-
-  while (true) {
-    try {
-      $stmt->execute($params);
-      return;
-    } catch (PDOException $e) {
-      $attempt++;
-      $sqlState = $e->getCode();
-      $msg = $e->getMessage();
-
-      $isDeadlock =
-        $sqlState === "40001" ||
-        str_contains($msg, "1213") ||
-        str_contains(strtolower($msg), "deadlock");
-
-      if (!$isDeadlock || $attempt >= $maxRetries) {
-        throw $e;
-      }
-
-      usleep(200000 * $attempt);
-    }
-  }
-}
-
 try {
   $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-  $findCityByAlias = $pdo->prepare("
+  $findCity = $pdo->prepare("
     SELECT c.id
     FROM location_cities c
-    INNER JOIN location_provinces p
-      ON p.id = c.province_id
-    LEFT JOIN location_city_aliases a
-      ON a.city_id = c.id
+    INNER JOIN location_provinces p ON p.id = c.province_id
+    LEFT JOIN location_city_aliases a ON a.city_id = c.id
     WHERE LOWER(TRIM(p.canonical_name)) = LOWER(TRIM(?))
       AND (
         LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
@@ -105,23 +77,12 @@ try {
   $processed = 0;
   $inserted = 0;
   $skipped = 0;
-  $batchSize = 500;
-
-  $pdo->beginTransaction();
 
   while (($row = fgetcsv($handle)) !== false) {
     $processed++;
 
     $province = col($row, $headerMap, ["province", "province_name", "prov_name"]);
-    $city = col($row, $headerMap, [
-      "city_municipality",
-      "city_municipality_name",
-      "city_mun",
-      "municipality",
-      "municipality_name",
-      "city",
-      "city_name"
-    ]);
+    $city = col($row, $headerMap, ["city_municipality", "city_municipality_name", "city", "municipality"]);
     $barangay = col($row, $headerMap, ["barangay", "barangay_name", "brgy", "brgy_name"]);
 
     if (!$province || !$city || !$barangay) {
@@ -131,38 +92,29 @@ try {
 
     $cacheKey = strtolower($province . "|" . $city);
 
-    if (array_key_exists($cacheKey, $cityCache)) {
-      $cityId = $cityCache[$cacheKey];
-    } else {
-      retry_execute($findCityByAlias, [$province, $city, $city]);
-      $cityId = $findCityByAlias->fetchColumn();
-      $cityCache[$cacheKey] = $cityId ?: null;
+    if (!array_key_exists($cacheKey, $cityCache)) {
+      $findCity->execute([$province, $city, $city]);
+      $cityCache[$cacheKey] = $findCity->fetchColumn() ?: null;
     }
+
+    $cityId = $cityCache[$cacheKey];
 
     if (!$cityId) {
       $missingCity[$cacheKey] = [
         "province" => $province,
         "city_municipality" => $city
       ];
+      $skipped++;
       continue;
     }
 
-    retry_execute($insertBarangay, [(int)$cityId, $barangay]);
+    $insertBarangay->execute([(int)$cityId, $barangay]);
 
     if ($insertBarangay->rowCount() > 0) {
       $inserted++;
     } else {
       $skipped++;
     }
-
-    if ($processed % $batchSize === 0) {
-      $pdo->commit();
-      $pdo->beginTransaction();
-    }
-  }
-
-  if ($pdo->inTransaction()) {
-    $pdo->commit();
   }
 
   fclose($handle);
@@ -178,8 +130,9 @@ try {
   ]);
 
 } catch (Throwable $e) {
-  if (is_resource($handle)) fclose($handle);
-  if ($pdo->inTransaction()) $pdo->rollBack();
+  if (is_resource($handle)) {
+    fclose($handle);
+  }
 
   out(500, [
     "ok" => false,
