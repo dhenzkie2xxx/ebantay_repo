@@ -298,17 +298,6 @@ try {
   $provinceFilter = normalize_scope_value($scope["province"] ?? null);
   $cityFilter = normalize_scope_value($scope["city_municipality"] ?? null);
 
-  /*
-    IMPORTANT:
-    Force hotspots.php to use an exact date range based on ?days.
-    This prevents old/previous-year hotspot circles from appearing on mobile.
-    Example:
-      days=365 => hotspot circles based on last 365 days only
-      incidents_points.php still uses days=30 for heatmap points
-  */
-  $dateTo = gmdate("Y-m-d");
-  $dateFrom = gmdate("Y-m-d", strtotime("-" . ($days - 1) . " days"));
-
   $hotspots = get_computed_hotspots(
     $pdo,
     $days,
@@ -316,9 +305,9 @@ try {
     $cityFilter,
     $role,
     $userId,
-    $dateFrom,
-    $dateTo
-  );
+    null,
+    null
+);
 
   out(200, [
     "ok" => true,
