@@ -298,16 +298,20 @@ try {
   $provinceFilter = normalize_scope_value($scope["province"] ?? null);
   $cityFilter = normalize_scope_value($scope["city_municipality"] ?? null);
 
+  $currentYear = gmdate("Y");
+  $dateFrom = $currentYear . "-01-01";
+  $dateTo = gmdate("Y-m-d");
+
   $hotspots = get_computed_hotspots(
     $pdo,
-    $days,
+    365,
     $provinceFilter,
     $cityFilter,
     $role,
     $userId,
-    null,
-    null
-);
+    $dateFrom,
+    $dateTo
+  );
 
   out(200, [
     "ok" => true,
@@ -321,10 +325,12 @@ try {
       "city_municipality" => $cityFilter,
     ],
     "filters" => [
-      "mode" => "days",
-      "days" => $days,
-      "period_label" => "Last " . $days . " days"
-    ],
+    "mode" => "current_year",
+    "year" => (int)$currentYear,
+    "from" => $dateFrom,
+    "to" => $dateTo,
+    "period_label" => "Current Year " . $currentYear
+  ],
     "hotspots" => $hotspots,
   ]);
 } catch (Throwable $e) {
