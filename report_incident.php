@@ -664,7 +664,15 @@ $geo = reverse_geocode_scope($pdo, $lat, $lng);
     }
   }
 
-  $assignedStation = assign_incident_station($pdo, $lat, $lng, $province, $cityMunicipality);
+  $assignedStation = assign_incident_station(
+    $pdo,
+    $lat,
+    $lng,
+    $province,
+    $cityMunicipality,
+    $barangay
+  );
+  
   $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
   $assignmentRule = $assignedStation["_assignment_rule"] ?? null;
 

@@ -349,26 +349,16 @@ try {
   $assignmentRule = "GPS_FALLBACK";
 
   if ($province && $cityMunicipality) {
-    $nearest = find_nearest_station_in_city(
+    $nearest = assign_incident_station(
       $pdo,
       $lat,
       $lng,
       $province,
-      $cityMunicipality
+      $cityMunicipality,
+      $barangay
     );
 
-    $assignmentRule = "CITY_FIRST";
-
-    if (!$nearest) {
-      $nearest = find_nearest_station_in_province(
-        $pdo,
-        $lat,
-        $lng,
-        $province
-      );
-
-      $assignmentRule = "PROVINCE_FALLBACK";
-    }
+    $assignmentRule = $nearest["_assignment_rule"] ?? "AREA_OR_CITY_FIRST";
   }
 
   if (!$nearest) {

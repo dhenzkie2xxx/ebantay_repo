@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . "/station_area_helper.php";
+
 function haversine_distance($lat1, $lon1, $lat2, $lon2) {
   $R = 6371000; // meters
 
@@ -88,7 +90,8 @@ function find_nearest_station_in_city(PDO $pdo, float $lat, float $lng, ?string 
 }
 
 /**
- * Panic button assignment (province-based)
+ * Panic button assignment.
+ * Keep current nearest-station behavior.
  */
 function assign_panic_station(PDO $pdo, float $lat, float $lng, ?string $province): ?array {
   $provinceMatch = find_nearest_station_in_province($pdo, $lat, $lng, $province);
@@ -102,10 +105,35 @@ function assign_panic_station(PDO $pdo, float $lat, float $lng, ?string $provinc
 }
 
 /**
- * Incident assignment logic
+ * Incident assignment logic.
+ *
+ * New optional parameter: $barangay
+ * Backward-compatible with old calls:
+ * assign_incident_station($pdo, $lat, $lng, $province, $city)
  */
-function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $province, ?string $city): ?array {
-  // Priority 1: Strict city match
+function assign_incident_station(
+  PDO $pdo,
+  float $lat,
+  float $lng,
+  ?string $province,
+  ?string $city,
+  ?string $barangay = null
+): ?array {
+  // Priority 1: Area of Responsibility barangay assignment
+  $areaMatch = find_station_by_area_of_responsibility(
+    $pdo,
+    $lat,
+    $lng,
+    $province,
+    $city,
+    $barangay
+  );
+
+  if ($areaMatch) {
+    return $areaMatch;
+  }
+
+  // Priority 2: Strict city match
   $cityMatch = find_nearest_station_in_city($pdo, $lat, $lng, $province, $city);
   if ($cityMatch) {
     $cityMatch["_assignment_rule"] = "CITY_STRICT";
@@ -123,7 +151,10 @@ function assign_incident_station(PDO $pdo, float $lat, float $lng, ?string $prov
 }
 
 /**
- * Find nearest police_on_field (real-time responder)
+ * Find nearest police_on_field.
+ *
+ * For incidents, the station is already decided by assigned_station_id.
+ * For panic, current nearest logic remains.
  */
 function find_nearest_police_on_field(PDO $pdo, float $lat, float $lng, ?string $province = null): ?array {
 
