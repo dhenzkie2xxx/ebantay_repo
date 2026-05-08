@@ -140,7 +140,7 @@ function resolve_request_scope(PDO $pdo): array {
         ];
       }
 
-      if ($role === "admin") {
+      if ($role === "admin" || $role === "police_on_field") {
         $canon = canonicalize_scope_from_parts(
           $pdo,
           $user["station_region"] ?? null,
@@ -150,7 +150,7 @@ function resolve_request_scope(PDO $pdo): array {
 
         return [
           "source" => "auth",
-          "role" => "admin",
+          "role" => $role,
           "user_id" => (int)$user["id"],
           "region" => $canon["region"] ?? normalize_scope_value($user["station_region"] ?? null),
           "province" => $canon["province"] ?? normalize_scope_value($user["station_province"] ?? null),
@@ -277,7 +277,7 @@ function append_scope_filter_for_incidents(
     return;
   }
 
-  if ($role === "admin") {
+  if ($role === "admin" || $role === "police_on_field") {
     if ($province !== null && $cityMunicipality !== null) {
       $sql .= "
         AND LOWER(TRIM(province)) = LOWER(TRIM(?))
@@ -339,7 +339,7 @@ function append_scope_filter_for_panic(
     return;
   }
 
-  if ($role === "admin") {
+  if ($role === "admin" || $role === "police_on_field") {
     if ($province !== null && $cityMunicipality !== null) {
       $sql .= "
         AND LOWER(TRIM(province)) = LOWER(TRIM(?))
@@ -451,6 +451,7 @@ if (($scope["role"] ?? "public") !== "super_admin") {
       "data" => $group === 1 ? (object)[] : [],
       "pending_markers" => [],
       "my_markers" => [],
+      "assigned_markers" => [],
     ]);
   }
 }
@@ -472,6 +473,7 @@ try {
   $heatPoints = [];
   $pendingMarkers = [];
   $myMarkers = [];
+  $assignedMarkers = [];
 
   if ($category === "" || strcasecmp($category, "Panic") !== 0) {
     $verifiedSql = "
@@ -698,6 +700,100 @@ try {
     }
   }
 
+  if ($role === "police_on_field" && $userId !== null) {
+    $assignedSql = "
+      SELECT
+        ra.id AS assignment_id,
+        ra.source_type,
+        ra.source_id,
+        ra.authorization_status,
+        ra.status AS assignment_status,
+        ra.assignment_role,
+        ra.detected_distance_m,
+
+        ir.incident_code,
+        ir.title AS incident_title,
+        ir.incident_type,
+        ir.lat AS incident_lat,
+        ir.lng AS incident_lng,
+        ir.barangay AS incident_barangay,
+        ir.city_municipality AS incident_city,
+        ir.province AS incident_province,
+        ir.verification_status,
+        ir.incident_phase,
+
+        p.level AS panic_level,
+        p.lat AS panic_lat,
+        p.lng AS panic_lng,
+        p.barangay AS panic_barangay,
+        p.city_municipality AS panic_city,
+        p.province AS panic_province,
+        p.status AS panic_status
+
+      FROM responder_assignments ra
+
+      LEFT JOIN incident_reports ir
+        ON ra.source_type = 'incident'
+       AND ir.id = ra.source_id
+
+      LEFT JOIN panic_requests p
+        ON ra.source_type = 'panic'
+       AND p.id = ra.source_id
+
+      WHERE ra.assigned_user_id = ?
+        AND ra.status <> 'cancelled'
+        AND ra.authorization_status IN ('detected', 'requested_to_proceed', 'go_signal_sent', 'approved_to_proceed')
+    ";
+
+    $params = [$userId];
+
+    $assignedSql .= "
+      ORDER BY ra.assigned_at DESC
+      LIMIT 100
+    ";
+
+    $stmt = $pdo->prepare($assignedSql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as $r) {
+      $isIncident = $r["source_type"] === "incident";
+
+      $lat = $isIncident ? $r["incident_lat"] : $r["panic_lat"];
+      $lng = $isIncident ? $r["incident_lng"] : $r["panic_lng"];
+
+      if ($lat === null || $lng === null) {
+        continue;
+      }
+
+      $assignedMarkers[] = [
+        "id" => (int)$r["assignment_id"],
+        "assignment_id" => (int)$r["assignment_id"],
+        "source_type" => $r["source_type"],
+        "source_id" => (int)$r["source_id"],
+        "lat" => (float)$lat,
+        "lng" => (float)$lng,
+        "marker_type" => $isIncident ? "assigned_incident" : "assigned_panic",
+        "authorization_status" => $r["authorization_status"],
+        "assignment_status" => $r["assignment_status"],
+        "assignment_role" => $r["assignment_role"],
+        "detected_distance_m" => $r["detected_distance_m"] !== null ? (int)$r["detected_distance_m"] : null,
+        "title" => $isIncident
+          ? ($r["incident_title"] ?: ($r["incident_type"] ?: "Assigned Incident"))
+          : "Assigned Panic Request",
+        "category" => $isIncident ? ($r["incident_type"] ?: "Incident") : "Panic",
+        "level" => $isIncident ? null : ($r["panic_level"] ?: "alert"),
+        "barangay" => $isIncident ? $r["incident_barangay"] : $r["panic_barangay"],
+        "city_municipality" => $isIncident ? $r["incident_city"] : $r["panic_city"],
+        "province" => $isIncident ? $r["incident_province"] : $r["panic_province"],
+        "verification_status" => $isIncident ? $r["verification_status"] : null,
+        "incident_phase" => $isIncident ? $r["incident_phase"] : null,
+        "panic_status" => $isIncident ? null : $r["panic_status"],
+        "source" => "responder_assignment",
+      ];
+    }
+  }
+
   if ($group === 1) {
     $groupedData = [];
     foreach ($heatPoints as $p) {
@@ -726,6 +822,7 @@ try {
         "data" => (object)[],
         "pending_markers" => [],
         "my_markers" => $myMarkers,
+        "assigned_markers" => [],
       ]);
     }
 
@@ -744,6 +841,7 @@ try {
       "data" => $groupedData,
       "pending_markers" => $pendingMarkers,
       "my_markers" => $myMarkers,
+      "assigned_markers" => $assignedMarkers,
     ]);
   }
 
@@ -763,6 +861,7 @@ try {
       "data" => [],
       "pending_markers" => [],
       "my_markers" => $myMarkers,
+      "assigned_markers" => [],
     ]);
   }
 
@@ -781,6 +880,7 @@ try {
     "data" => $heatPoints,
     "pending_markers" => $pendingMarkers,
     "my_markers" => $myMarkers,
+    "assigned_markers" => $assignedMarkers,
   ]);
 } catch (Throwable $e) {
   out(500, [

@@ -142,7 +142,7 @@ function resolve_request_scope(PDO $pdo): array {
         ];
       }
 
-      if ($role === "admin") {
+      if ($role === "admin" || $role === "police_on_field") {
         $canon = canonicalize_scope_from_parts(
           $pdo,
           $user["station_region"] ?? null,
@@ -152,7 +152,7 @@ function resolve_request_scope(PDO $pdo): array {
 
         return [
           "source" => "auth",
-          "role" => "admin",
+          "role" => $role,
           "user_id" => (int)$user["id"],
           "region" => $canon["region"] ?? normalize_scope_value($user["station_region"] ?? null),
           "province" => $canon["province"] ?? normalize_scope_value($user["station_province"] ?? null),
@@ -276,20 +276,21 @@ $days = max(1, min(365, $days));
 
 try {
   $scope = resolve_request_scope($pdo);
-$role = strtolower((string)($scope["role"] ?? "public"));
-if ($role === "citizen") {
-  out(200, [
-    "ok" => true,
-    "hotspots" => [],
-    "scope" => [
-      "source" => $scope["source"] ?? null,
-      "role" => $role,
-      "region" => $scope["region"] ?? null,
-      "province" => $scope["province"] ?? null,
-      "city_municipality" => $scope["city_municipality"] ?? null
-    ]
-  ]);
-}
+
+  $role = strtolower((string)($scope["role"] ?? "public"));
+  if ($role === "citizen") {
+    out(200, [
+      "ok" => true,
+      "hotspots" => [],
+      "scope" => [
+        "source" => $scope["source"] ?? null,
+        "role" => $role,
+        "region" => $scope["region"] ?? null,
+        "province" => $scope["province"] ?? null,
+        "city_municipality" => $scope["city_municipality"] ?? null
+      ]
+    ]);
+  }
 
   $role = (string)($scope["role"] ?? "public");
   $userId = isset($scope["user_id"]) ? (int)$scope["user_id"] : null;
