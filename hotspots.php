@@ -321,8 +321,8 @@ try {
       "city_municipality" => $cityFilter,
     ],
     "filters" => [
-      "from" => $dateFrom,
-      "to" => $dateTo,
+      "mode" => "days",
+      "days" => $days,
       "period_label" => "Last " . $days . " days"
     ],
     "hotspots" => $hotspots,
