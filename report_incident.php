@@ -329,17 +329,38 @@ function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
   $road = $addr["road"] ?? "";
   $displayName = $json["display_name"] ?? "";
 
-  return [
-    "ok" => true,
-    "address" => [
-      "barangay" => normalize_scope_value($barangay),
-      "city_municipality" => normalize_scope_value($cityMunicipality),
-      "province" => normalize_scope_value($province),
-      "region" => normalize_scope_value($region),
-      "place_of_incident" => normalize_scope_value($road),
-      "display_name" => normalize_scope_value($displayName)
-    ]
-  ];
+$barangayCanonical = null;
+
+if ($province !== "" && $cityMunicipality !== "" && $barangay !== "") {
+  $scope = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+
+  if (!empty($scope["ok"])) {
+    $province = $scope["province"];
+    $cityMunicipality = $scope["city_municipality"];
+    $region = $scope["region"] ?? $region;
+
+    if (function_exists("resolve_barangay")) {
+      $barangayCanonical = resolve_barangay(
+        $pdo,
+        $province,
+        $cityMunicipality,
+        $barangay
+      );
+    }
+  }
+}
+
+return [
+  "ok" => true,
+  "address" => [
+    "barangay" => normalize_scope_value($barangayCanonical ?: $barangay),
+    "city_municipality" => normalize_scope_value($cityMunicipality),
+    "province" => normalize_scope_value($province),
+    "region" => normalize_scope_value($region),
+    "place_of_incident" => normalize_scope_value($road),
+    "display_name" => normalize_scope_value($displayName)
+  ]
+];
 }
 
 function can_user_use_protected_features(array $user): bool {
@@ -672,7 +693,7 @@ $geo = reverse_geocode_scope($pdo, $lat, $lng);
     $cityMunicipality,
     $barangay
   );
-  
+
   $assignedStationId = $assignedStation ? (int)$assignedStation["id"] : null;
   $assignmentRule = $assignedStation["_assignment_rule"] ?? null;
 

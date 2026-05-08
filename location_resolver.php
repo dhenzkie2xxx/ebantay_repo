@@ -191,6 +191,60 @@ function resolve_region_from_province(PDO $pdo, string $provinceCanonical): ?str
   return $value !== false ? (string)$value : null;
 }
 
+function resolve_barangay(PDO $pdo, string $provinceCanonical, string $cityCanonical, string $input): ?string {
+  $provinceCanonical = trim((string)$provinceCanonical);
+  $cityCanonical = trim((string)$cityCanonical);
+  $norm = location_normalize_text($input);
+
+  if ($provinceCanonical === "" || $cityCanonical === "" || $norm === "") {
+    return null;
+  }
+
+  $stmt = $pdo->prepare("
+    SELECT b.canonical_name
+    FROM location_barangays b
+    JOIN location_cities c ON c.id = b.city_id
+    JOIN location_provinces p ON p.id = c.province_id
+    LEFT JOIN location_barangay_aliases a ON a.barangay_id = b.id
+    WHERE LOWER(TRIM(p.canonical_name)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
+      AND (
+        LOWER(TRIM(b.canonical_name)) = ?
+        OR LOWER(TRIM(a.alias_name)) = ?
+      )
+    LIMIT 1
+  ");
+
+  $stmt->execute([
+    $provinceCanonical,
+    $cityCanonical,
+    $norm,
+    $norm
+  ]);
+
+  $value = $stmt->fetchColumn();
+  return $value !== false ? (string)$value : null;
+}
+
+function list_barangays_by_city(PDO $pdo, string $provinceCanonical, string $cityCanonical): array {
+  $stmt = $pdo->prepare("
+    SELECT b.canonical_name
+    FROM location_barangays b
+    JOIN location_cities c ON c.id = b.city_id
+    JOIN location_provinces p ON p.id = c.province_id
+    WHERE LOWER(TRIM(p.canonical_name)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
+    ORDER BY b.canonical_name ASC
+  ");
+
+  $stmt->execute([$provinceCanonical, $cityCanonical]);
+
+  return array_map(
+    fn($r) => $r["canonical_name"],
+    $stmt->fetchAll(PDO::FETCH_ASSOC)
+  );
+}
+
 function canonicalize_scope(PDO $pdo, ?string $region, ?string $province, ?string $cityMunicipality): array {
   $province = location_nullable_text($province);
   $cityMunicipality = location_nullable_text($cityMunicipality);
