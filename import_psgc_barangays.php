@@ -15,55 +15,20 @@ function clean_text($value): ?string {
   return $value === "" ? null : $value;
 }
 
-/*
-|--------------------------------------------------------------------------
-| How to use
-|--------------------------------------------------------------------------
-| 1. Download the PSGC publication datafile from PSA:
-|    https://psa.gov.ph/classification/psgc
-|
-| 2. Open the Excel file.
-|
-| 3. Export/save the barangay sheet as:
-|    psgc_barangays.csv
-|
-| 4. Put psgc_barangays.csv in the same folder as this PHP file.
-|
-| 5. Visit:
-|    https://your-api-domain.com/import_psgc_barangays.php
-|
-| 6. Delete/protect this file after import.
-|
-| Expected CSV columns can be flexible. The script looks for headers like:
-| - province
-| - city / municipality
-| - barangay
-|--------------------------------------------------------------------------
-*/
-
 $csvPath = __DIR__ . "/psgc_barangays.csv";
 
 if (!file_exists($csvPath)) {
-  out(404, [
-    "ok" => false,
-    "message" => "psgc_barangays.csv not found in API folder."
-  ]);
+  out(404, ["ok" => false, "message" => "psgc_barangays.csv not found."]);
 }
 
 $handle = fopen($csvPath, "r");
 if (!$handle) {
-  out(500, [
-    "ok" => false,
-    "message" => "Unable to open CSV file."
-  ]);
+  out(500, ["ok" => false, "message" => "Unable to open CSV file."]);
 }
 
 $headers = fgetcsv($handle);
 if (!$headers) {
-  out(400, [
-    "ok" => false,
-    "message" => "CSV has no header row."
-  ]);
+  out(400, ["ok" => false, "message" => "CSV has no header row."]);
 }
 
 $headerMap = [];
@@ -83,18 +48,34 @@ function col(array $row, array $headerMap, array $possibleKeys): ?string {
   return null;
 }
 
-try {
-  $pdo->beginTransaction();
+function retry_execute(PDOStatement $stmt, array $params, int $maxRetries = 3): void {
+  $attempt = 0;
 
-  $findCity = $pdo->prepare("
-    SELECT c.id
-    FROM location_cities c
-    INNER JOIN location_provinces p
-      ON p.id = c.province_id
-    WHERE LOWER(TRIM(p.canonical_name)) = LOWER(TRIM(?))
-      AND LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
-    LIMIT 1
-  ");
+  while (true) {
+    try {
+      $stmt->execute($params);
+      return;
+    } catch (PDOException $e) {
+      $attempt++;
+      $sqlState = $e->getCode();
+      $msg = $e->getMessage();
+
+      $isDeadlock =
+        $sqlState === "40001" ||
+        str_contains($msg, "1213") ||
+        str_contains(strtolower($msg), "deadlock");
+
+      if (!$isDeadlock || $attempt >= $maxRetries) {
+        throw $e;
+      }
+
+      usleep(200000 * $attempt);
+    }
+  }
+}
+
+try {
+  $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
   $findCityByAlias = $pdo->prepare("
     SELECT c.id
@@ -119,20 +100,19 @@ try {
     VALUES (?, ?)
   ");
 
-  $inserted = 0;
-  $skipped = 0;
+  $cityCache = [];
   $missingCity = [];
   $processed = 0;
+  $inserted = 0;
+  $skipped = 0;
+  $batchSize = 500;
+
+  $pdo->beginTransaction();
 
   while (($row = fgetcsv($handle)) !== false) {
     $processed++;
 
-    $province = col($row, $headerMap, [
-      "province",
-      "province_name",
-      "prov_name"
-    ]);
-
+    $province = col($row, $headerMap, ["province", "province_name", "prov_name"]);
     $city = col($row, $headerMap, [
       "city_municipality",
       "city_municipality_name",
@@ -142,70 +122,50 @@ try {
       "city",
       "city_name"
     ]);
-
-    $barangay = col($row, $headerMap, [
-      "barangay",
-      "barangay_name",
-      "brgy",
-      "brgy_name"
-    ]);
-
-    /*
-     * Some PSGC exports use "Geographic Name" and "Geographic Level".
-     * If your CSV uses that format, barangay rows must have level = Barangay,
-     * while province/city columns should still exist from the publication sheet.
-     */
-    $geoLevel = col($row, $headerMap, [
-      "geographic_level",
-      "level",
-      "geo_level"
-    ]);
-
-    $geoName = col($row, $headerMap, [
-      "geographic_name",
-      "name"
-    ]);
-
-    if (!$barangay && $geoLevel && strtolower($geoLevel) === "barangay") {
-      $barangay = $geoName;
-    }
+    $barangay = col($row, $headerMap, ["barangay", "barangay_name", "brgy", "brgy_name"]);
 
     if (!$province || !$city || !$barangay) {
       $skipped++;
       continue;
     }
 
-    $findCity->execute([$province, $city]);
-    $cityId = $findCity->fetchColumn();
+    $cacheKey = strtolower($province . "|" . $city);
 
-    if (!$cityId) {
-      $findCityByAlias->execute([$province, $city, $city]);
+    if (array_key_exists($cacheKey, $cityCache)) {
+      $cityId = $cityCache[$cacheKey];
+    } else {
+      retry_execute($findCityByAlias, [$province, $city, $city]);
       $cityId = $findCityByAlias->fetchColumn();
+      $cityCache[$cacheKey] = $cityId ?: null;
     }
 
     if (!$cityId) {
-      $missingKey = strtolower($province . "|" . $city);
-      $missingCity[$missingKey] = [
+      $missingCity[$cacheKey] = [
         "province" => $province,
         "city_municipality" => $city
       ];
       continue;
     }
 
-    $insertBarangay->execute([
-      (int)$cityId,
-      $barangay
-    ]);
+    retry_execute($insertBarangay, [(int)$cityId, $barangay]);
 
     if ($insertBarangay->rowCount() > 0) {
       $inserted++;
     } else {
       $skipped++;
     }
+
+    if ($processed % $batchSize === 0) {
+      $pdo->commit();
+      $pdo->beginTransaction();
+    }
+  }
+
+  if ($pdo->inTransaction()) {
+    $pdo->commit();
   }
 
   fclose($handle);
-  $pdo->commit();
 
   out(200, [
     "ok" => true,
@@ -218,13 +178,8 @@ try {
   ]);
 
 } catch (Throwable $e) {
-  if (is_resource($handle)) {
-    fclose($handle);
-  }
-
-  if ($pdo->inTransaction()) {
-    $pdo->rollBack();
-  }
+  if (is_resource($handle)) fclose($handle);
+  if ($pdo->inTransaction()) $pdo->rollBack();
 
   out(500, [
     "ok" => false,
