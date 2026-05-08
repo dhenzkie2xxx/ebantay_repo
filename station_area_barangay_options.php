@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . "/auth_helpers.php";
 require_once __DIR__ . "/db.php";
+require_once __DIR__ . "/location_resolver.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -46,7 +47,7 @@ try {
   $stationId = (int)$admin["station_id"];
 
   $stmt = $pdo->prepare("
-    SELECT province, city_municipality
+    SELECT province, city_municipality, region
     FROM police_stations
     WHERE id = ?
     LIMIT 1
@@ -58,9 +59,20 @@ try {
     out(404, ["ok" => false, "message" => "Station not found."]);
   }
 
-  $province = trim((string)$station["province"]);
-  $city = trim((string)$station["city_municipality"]);
+  $province = trim((string)($station["province"] ?? ""));
+  $city = trim((string)($station["city_municipality"] ?? ""));
+  $region = trim((string)($station["region"] ?? ""));
 
+  $canon = canonicalize_scope($pdo, $region, $province, $city);
+
+  if (!empty($canon["ok"])) {
+    $province = $canon["province"];
+    $city = $canon["city_municipality"];
+  }
+
+  /*
+   * Main query: exact canonical province + city.
+   */
   $barangayStmt = $pdo->prepare("
     SELECT b.canonical_name AS barangay
     FROM location_barangays b
@@ -72,6 +84,23 @@ try {
   ");
   $barangayStmt->execute([$province, $city]);
   $rows = $barangayStmt->fetchAll(PDO::FETCH_ASSOC);
+
+  /*
+   * Fallback: city-only match.
+   * Useful for HUCs / province naming mismatch.
+   */
+  if (count($rows) === 0 && $city !== "") {
+    $fallbackStmt = $pdo->prepare("
+      SELECT b.canonical_name AS barangay
+      FROM location_barangays b
+      INNER JOIN location_cities c ON c.id = b.city_id
+      WHERE LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
+         OR LOWER(TRIM(c.canonical_name)) LIKE LOWER(TRIM(?))
+      ORDER BY b.canonical_name ASC
+    ");
+    $fallbackStmt->execute([$city, "%" . $city . "%"]);
+    $rows = $fallbackStmt->fetchAll(PDO::FETCH_ASSOC);
+  }
 
   out(200, [
     "ok" => true,
