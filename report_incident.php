@@ -530,6 +530,22 @@ function feature_block_message(array $user): string {
   return "Your account is not yet activated. Please complete account setup or contact the administrator.";
 }
 
+function is_reporter_registered_with_station(?array $assignedStation, ?array $profile): int {
+  if (!$assignedStation || !$profile) return 0;
+
+  $stationProvince = strtolower(trim((string)($assignedStation["province"] ?? "")));
+  $stationCity = strtolower(trim((string)($assignedStation["city_municipality"] ?? "")));
+
+  $profileProvince = strtolower(trim((string)($profile["province"] ?? "")));
+  $profileCity = strtolower(trim((string)($profile["city_municipality"] ?? "")));
+
+  if ($stationProvince === "" || $stationCity === "" || $profileProvince === "" || $profileCity === "") {
+    return 0;
+  }
+
+  return ($stationProvince === $profileProvince && $stationCity === $profileCity) ? 1 : 0;
+}
+
 if ($_SERVER["REQUEST_METHOD"] !== "POST") {
   out(405, ["ok" => false, "message" => "Method not allowed"]);
 }
@@ -848,6 +864,31 @@ try {
   $verificationStatus = 'PENDING';
   $incidentCode = generate_incident_code($pdo);
 
+  $profileStmt = $pdo->prepare("
+    SELECT
+      mobile_number,
+      address_text,
+      barangay,
+      city_municipality,
+      province,
+      region,
+      sex_gender,
+      birth_date,
+      age,
+      civil_status,
+      occupation
+    FROM user_profiles
+    WHERE user_id = ?
+    LIMIT 1
+  ");
+  $profileStmt->execute([(int)$user["id"]]);
+  $reporterProfile = $profileStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+  $registeredWithinStation = is_reporter_registered_with_station(
+    $assignedStation,
+    $reporterProfile
+  );
+
   $duplicateOfId = $duplicateOf ? (int)$duplicateOf["id"] : null;
   $duplicateDistanceM = $duplicateOf ? (int)($duplicateOf["distance_m"] ?? 0) : null;
   $duplicateSimilarity = ($duplicateOf && $duplicateOf["text_similarity"] !== null)
@@ -948,16 +989,27 @@ try {
   $incidentId = (int)$pdo->lastInsertId();
 
   $personStmt = $pdo->prepare("
-    INSERT INTO incident_persons (
+  INSERT INTO incident_persons (
       incident_id,
       person_role,
       linked_user_id,
       family_name,
       first_name,
+      sex_gender,
+      civil_status,
+      birth_date,
+      age,
+      mobile_phone,
       email_address,
+      current_address,
+      current_sitio,
+      current_barangay,
+      current_city,
+      current_province,
+      occupation,
       created_at
     ) VALUES (
-      ?, 'REPORTING_PERSON', ?, ?, ?, ?, NOW()
+      ?, 'REPORTING_PERSON', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()
     )
   ");
 
@@ -966,7 +1018,27 @@ try {
     (int)$user["id"],
     $user["lastname"] ?? null,
     $user["firstname"] ?? null,
-    $user["email"] ?? null
+    $reporterProfile["sex_gender"] ?? null,
+    $reporterProfile["civil_status"] ?? null,
+    $reporterProfile["birth_date"] ?? null,
+    isset($reporterProfile["age"]) && $reporterProfile["age"] !== null
+      ? (int)$reporterProfile["age"]
+      : null,
+    $reporterProfile["mobile_number"] ?? null,
+    $user["email"] ?? null,
+
+    /*
+      Current location/address at reporting time.
+      This is intentionally based on the incident/report location,
+      not only the saved home address.
+    */
+    $placeOfIncident ?: ($reporterProfile["address_text"] ?? null),
+    $sitio,
+    $barangay,
+    $cityMunicipality,
+    $province,
+
+    $reporterProfile["occupation"] ?? null
   ]);
 
   $statusRemark = 'Incident reported from mobile app';
@@ -1132,6 +1204,12 @@ try {
       "city_municipality" => $cityMunicipality,
       "barangay" => $barangay,
       "place_of_incident" => $placeOfIncident
+    ],
+    "reporter_registration" => [
+      "registered_within_station" => $registeredWithinStation === 1,
+      "label" => $registeredWithinStation === 1
+        ? "Registered within the station"
+        : "Not registered within the station"
     ],
     "assignment" => [
       "assigned_station_id" => $assignedStationId,

@@ -47,6 +47,18 @@ function is_valid_ph_mobile(string $value): bool {
   return preg_match('/^09\d{9}$/', $value) === 1;
 }
 
+function calculate_age_from_birth_date(?string $birthDate): ?int {
+  if (!$birthDate) return null;
+
+  $ts = strtotime($birthDate);
+  if ($ts === false) return null;
+
+  $birth = new DateTime(date("Y-m-d", $ts));
+  $today = new DateTime(date("Y-m-d"));
+
+  return (int)$birth->diff($today)->y;
+}
+
 try {
   if ($_SERVER["REQUEST_METHOD"] !== "POST") {
     out(405, ["ok" => false, "message" => "Method not allowed"]);
@@ -95,6 +107,12 @@ try {
   $province = normalize_scope_value($data["province"] ?? null);
   $region = normalize_scope_value($data["region"] ?? null);
 
+  $sexGender = normalize_scope_value($data["sex_gender"] ?? null);
+  $birthDate = normalize_scope_value($data["birth_date"] ?? null);
+  $civilStatus = normalize_scope_value($data["civil_status"] ?? null);
+  $occupation = normalize_scope_value($data["occupation"] ?? null);
+  $age = calculate_age_from_birth_date($birthDate);
+
   $addressLat = $data["address_lat"] ?? null;
   $addressLng = $data["address_lng"] ?? null;
 
@@ -120,12 +138,14 @@ try {
     out(422, ["ok" => false, "message" => "Address coordinates are out of range"]);
   }
 
+  if ($birthDate !== null && strtotime($birthDate) === false) {
+    out(422, ["ok" => false, "message" => "Invalid birth date"]);
+  }
+
   if (!$cityMunicipality || !$province) {
     out(422, ["ok" => false, "message" => "City/Municipality and Province are required"]);
   }
 
-  // Canonicalize location values so raw reverse-geocoded values like
-  // "Tangub" become the official/canonical city value like "Tangub City".
   $canon = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
   if (!$canon["ok"]) {
     out(422, [
@@ -190,6 +210,11 @@ try {
         city_municipality = ?,
         province = ?,
         region = ?,
+        sex_gender = ?,
+        birth_date = ?,
+        age = ?,
+        civil_status = ?,
+        occupation = ?,
         updated_at = NOW()
       WHERE user_id = ?
       LIMIT 1
@@ -203,6 +228,11 @@ try {
       $cityMunicipality,
       $province,
       $region,
+      $sexGender,
+      $birthDate,
+      $age,
+      $civilStatus,
+      $occupation,
       $userId,
     ]);
   } else {
@@ -218,10 +248,15 @@ try {
         city_municipality,
         province,
         region,
+        sex_gender,
+        birth_date,
+        age,
+        civil_status,
+        occupation,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     ");
     $insertStmt->execute([
       $userId,
@@ -233,6 +268,11 @@ try {
       $cityMunicipality,
       $province,
       $region,
+      $sexGender,
+      $birthDate,
+      $age,
+      $civilStatus,
+      $occupation,
     ]);
   }
 
@@ -270,6 +310,11 @@ try {
       "city_municipality" => $cityMunicipality,
       "province" => $province,
       "region" => $region,
+      "sex_gender" => $sexGender,
+      "birth_date" => $birthDate,
+      "age" => $age,
+      "civil_status" => $civilStatus,
+      "occupation" => $occupation,
       "mobile_locked" => true,
     ]
   ]);

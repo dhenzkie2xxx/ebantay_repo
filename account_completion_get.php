@@ -85,6 +85,11 @@ try {
       up.city_municipality,
       up.province,
       up.region,
+      up.sex_gender,
+      up.birth_date,
+      up.age,
+      up.civil_status,
+      up.occupation,
       up.created_at AS profile_created_at,
       up.updated_at AS profile_updated_at
 
@@ -338,6 +343,11 @@ try {
       "city_municipality" => $row["city_municipality"],
       "province" => $row["province"],
       "region" => $row["region"],
+      "sex_gender" => $row["sex_gender"],
+      "birth_date" => $row["birth_date"],
+      "age" => $row["age"] !== null ? (int)$row["age"] : null,
+      "civil_status" => $row["civil_status"],
+      "occupation" => $row["occupation"],
       "profile_created_at" => $row["profile_created_at"],
       "profile_updated_at" => $row["profile_updated_at"]
     ],
