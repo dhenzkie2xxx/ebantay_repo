@@ -111,14 +111,18 @@ function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
     $candidateBaseTime = (string)($r["date_incident_from"] ?: $r["created_at"]);
     $timeDiffSec = abs(strtotime($baseTime) - strtotime($candidateBaseTime));
 
-    if (!$isAlreadyLinked) {
-      if ($distanceM > 200) {
-        continue;
-      }
+  /*
+    Always enforce distance and time threshold,
+    even if the report is already linked by duplicate_of_id.
+    This prevents old reports from previous years from showing
+    as the Original Basis Report.
+*/
+    if ($distanceM > 200) {
+      continue;
+    }
 
-      if ($timeDiffSec > 7200) {
-        continue;
-      }
+    if ($timeDiffSec > 7200) {
+      continue;
     }
 
     $existingNarrative = normalize_narrative_for_match((string)($r["narrative"] ?? ""));

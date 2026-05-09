@@ -264,7 +264,29 @@ function find_duplicate_incident(
       $root = $rootStmt->fetch(PDO::FETCH_ASSOC);
 
       if ($root) {
-        $r = $root;
+        $rootDistanceM = haversineMeters(
+          $lat,
+          $lng,
+          (float)$root["lat"],
+          (float)$root["lng"]
+        );
+
+        $rootBaseTime = (string)($root["date_incident_from"] ?: $root["created_at"]);
+        $rootTimeDiffSec = abs(strtotime((string)$dateIncidentFromSql) - strtotime($rootBaseTime));
+
+        /*
+          Only use the original parent if it is still within
+          the duplicate detection rules.
+          This prevents old reports from previous years from becoming basis reports.
+        */
+        if (
+          $rootDistanceM <= $distanceThresholdMeters &&
+          $rootTimeDiffSec <= $timeThresholdSeconds
+        ) {
+          $r = $root;
+          $distanceM = $rootDistanceM;
+          $timeDiffSec = $rootTimeDiffSec;
+        }
       }
     }
 

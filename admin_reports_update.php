@@ -159,6 +159,10 @@ try {
           SELECT incident_type FROM incident_reports WHERE id = ? LIMIT 1
         )
         AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
+        AND created_at >= DATE_SUB(
+          (SELECT created_at FROM incident_reports WHERE id = ? LIMIT 1),
+          INTERVAL 12 HOUR
+        )
         AND created_at <= (
           SELECT created_at FROM incident_reports WHERE id = ? LIMIT 1
         )
@@ -166,7 +170,7 @@ try {
       LIMIT 1
     ");
 
-    $basisStmt->execute([$id, $id, $id]);
+    $basisStmt->execute([$id, $id, $id, $id]);
     $basis = $basisStmt->fetch(PDO::FETCH_ASSOC);
 
     if ($basis) {

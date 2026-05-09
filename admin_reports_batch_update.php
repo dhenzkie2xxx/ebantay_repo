@@ -182,6 +182,7 @@ try {
         WHERE id <> ?
           AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
           AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
+          AND created_at >= DATE_SUB(?, INTERVAL 12 HOUR)
           AND created_at <= ?
         ORDER BY created_at ASC
         LIMIT 1
@@ -190,6 +191,7 @@ try {
       $basisStmt->execute([
         (int)$row["id"],
         (string)$row["incident_type"],
+        (string)$row["created_at"],
         (string)$row["created_at"]
       ]);
 
