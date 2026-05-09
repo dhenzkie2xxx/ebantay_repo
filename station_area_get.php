@@ -68,7 +68,25 @@ try {
     out(404, ["ok" => false, "message" => "Station not found."]);
   }
 
-  $areas = station_area_get_barangays($pdo, $stationId);
+  $countStmt = $pdo->prepare("
+    SELECT COUNT(*) AS total
+    FROM police_stations
+    WHERE verification_status = 'approved'
+      AND is_active = 1
+      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+  ");
+  $countStmt->execute([
+    $station["province"],
+    $station["city_municipality"]
+  ]);
+  $stationCountInCity = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
+
+  $canManageBarangays = $stationCountInCity > 1;
+
+  $areas = $canManageBarangays
+    ? station_area_get_barangays($pdo, $stationId)
+    : [];
 
   out(200, [
     "ok" => true,
@@ -89,7 +107,10 @@ try {
         "created_at" => $r["created_at"]
       ];
     }, $areas),
-    "mode" => count($areas) > 0 ? "barangay_specific" : "whole_city"
+    "mode" => $canManageBarangays && count($areas) > 0 ? "barangay_specific" : "whole_city",
+    "station_count_in_city" => $stationCountInCity,
+    "can_manage_barangays" => $canManageBarangays,
+    "forced_whole_city" => !$canManageBarangays
   ]);
 
 } catch (Throwable $e) {

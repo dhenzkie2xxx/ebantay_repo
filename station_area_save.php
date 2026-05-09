@@ -58,7 +58,6 @@ if (!is_array($barangays)) {
 }
 
 try {
-
   $admin = auth_get_user_by_token($pdo, $token);
 
   if (!$admin) {
@@ -109,7 +108,6 @@ try {
   ");
 
   $stationStmt->execute([$stationId]);
-
   $station = $stationStmt->fetch(PDO::FETCH_ASSOC);
 
   if (!$station) {
@@ -129,10 +127,62 @@ try {
     ]);
   }
 
+  /*
+  |--------------------------------------------------------------------------
+  | If this is the only approved active station in the city/municipality,
+  | force whole city coverage.
+  |--------------------------------------------------------------------------
+  */
+  $countStmt = $pdo->prepare("
+    SELECT COUNT(*) AS total
+    FROM police_stations
+    WHERE verification_status = 'approved'
+      AND is_active = 1
+      AND LOWER(TRIM(province)) = LOWER(TRIM(?))
+      AND LOWER(TRIM(city_municipality)) = LOWER(TRIM(?))
+  ");
+  $countStmt->execute([$province, $city]);
+  $stationCountInCity = (int)($countStmt->fetch(PDO::FETCH_ASSOC)["total"] ?? 0);
+
+  if ($stationCountInCity <= 1) {
+    $pdo->beginTransaction();
+
+    $deleteStmt = $pdo->prepare("
+      DELETE FROM station_area_barangays
+      WHERE station_id = ?
+    ");
+    $deleteStmt->execute([$stationId]);
+
+    write_audit_log(
+      $pdo,
+      $admin,
+      "STATION_AREA_FORCED_WHOLE_CITY",
+      "station_area_barangays",
+      $stationId,
+      "Station Area of Responsibility forced to whole city because no other active approved station exists in the city.",
+      [
+        "module" => "station_area",
+        "province" => $province,
+        "city_municipality" => $city,
+        "station_count_in_city" => $stationCountInCity
+      ]
+    );
+
+    $pdo->commit();
+
+    out(200, [
+      "ok" => true,
+      "message" => "Only one active station exists in this city/municipality. Area is forced to whole city coverage.",
+      "mode" => "whole_city",
+      "forced_whole_city" => true,
+      "can_manage_barangays" => false,
+      "barangays" => []
+    ]);
+  }
+
   $normalizedBarangays = [];
 
   foreach ($barangays as $b) {
-
     $b = clean_text($b);
 
     if (!$b) continue;
@@ -149,12 +199,11 @@ try {
    * Barangay cannot belong to another station admin.
    */
   if (count($normalizedBarangays) > 0) {
-
     $placeholders = implode(",", array_fill(0, count($normalizedBarangays), "?"));
 
     $params = array_merge(
       [$province, $city, $stationId],
-      $normalizedBarangays
+      array_map("strtolower", $normalizedBarangays)
     );
 
     $conflictStmt = $pdo->prepare("
@@ -172,11 +221,9 @@ try {
     ");
 
     $conflictStmt->execute($params);
-
     $conflict = $conflictStmt->fetch(PDO::FETCH_ASSOC);
 
     if ($conflict) {
-
       $pdo->rollBack();
 
       out(409, [
@@ -187,17 +234,16 @@ try {
   }
 
   /*
-   * Replace station assignments
+   * Replace station assignments.
+   * Empty barangays = whole city coverage.
    */
   $deleteStmt = $pdo->prepare("
     DELETE FROM station_area_barangays
     WHERE station_id = ?
   ");
-
   $deleteStmt->execute([$stationId]);
 
   if (count($normalizedBarangays) > 0) {
-
     $insertStmt = $pdo->prepare("
       INSERT INTO station_area_barangays (
         station_id,
@@ -209,7 +255,6 @@ try {
     ");
 
     foreach ($normalizedBarangays as $barangay) {
-
       $insertStmt->execute([
         $stationId,
         $province,
@@ -232,7 +277,8 @@ try {
       "module" => "station_area",
       "barangay_count" => count($normalizedBarangays),
       "province" => $province,
-      "city_municipality" => $city
+      "city_municipality" => $city,
+      "station_count_in_city" => $stationCountInCity
     ]
   );
 
@@ -246,11 +292,13 @@ try {
     "mode" => count($normalizedBarangays) > 0
       ? "barangay_specific"
       : "whole_city",
+    "forced_whole_city" => false,
+    "can_manage_barangays" => true,
+    "station_count_in_city" => $stationCountInCity,
     "barangays" => $normalizedBarangays
   ]);
 
 } catch (Throwable $e) {
-
   if ($pdo->inTransaction()) {
     $pdo->rollBack();
   }
