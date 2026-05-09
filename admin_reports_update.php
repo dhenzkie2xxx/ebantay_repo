@@ -112,7 +112,8 @@ try {
       case_status,
       reviewed_at,
       province,
-      assigned_station_id
+      assigned_station_id,
+      duplicate_of_id
     FROM incident_reports
     WHERE id = ?
     LIMIT 1
@@ -139,6 +140,41 @@ try {
     ]);
   }
 
+  $duplicateOfId = null;
+  $duplicateDistanceM = null;
+  $duplicateSimilarity = null;
+  $duplicateTimeDiffSec = null;
+
+  if ($verificationStatus === "DUPLICATE") {
+    $basisStmt = $pdo->prepare("
+      SELECT
+        id,
+        duplicate_of_id,
+        duplicate_distance_m,
+        duplicate_similarity,
+        duplicate_time_diff_sec
+      FROM incident_reports
+      WHERE id <> ?
+        AND incident_type = (
+          SELECT incident_type FROM incident_reports WHERE id = ? LIMIT 1
+        )
+        AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
+        AND created_at <= (
+          SELECT created_at FROM incident_reports WHERE id = ? LIMIT 1
+        )
+      ORDER BY created_at ASC
+      LIMIT 1
+    ");
+
+    $basisStmt->execute([$id, $id, $id]);
+    $basis = $basisStmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($basis) {
+      $basisParentId = (int)($basis["duplicate_of_id"] ?? 0);
+      $duplicateOfId = $basisParentId > 0 ? $basisParentId : (int)$basis["id"];
+    }
+  }
+
   $stmt = $pdo->prepare("
     UPDATE incident_reports
     SET
@@ -152,9 +188,25 @@ try {
         ELSE reviewed_at
       END,
       resolved_at = CASE
-        WHEN :set_resolved_at = 1 THEN :resolved_at
-        ELSE resolved_at
-      END
+      WHEN :set_resolved_at = 1 THEN :resolved_at
+      ELSE resolved_at
+    END,
+    duplicate_of_id = CASE
+      WHEN :verification_status_duplicate = 1 THEN :duplicate_of_id
+      ELSE NULL
+    END,
+    duplicate_distance_m = CASE
+      WHEN :verification_status_duplicate = 1 THEN duplicate_distance_m
+      ELSE NULL
+    END,
+    duplicate_similarity = CASE
+      WHEN :verification_status_duplicate = 1 THEN duplicate_similarity
+      ELSE NULL
+    END,
+    duplicate_time_diff_sec = CASE
+      WHEN :verification_status_duplicate = 1 THEN duplicate_time_diff_sec
+      ELSE NULL
+    END
     WHERE id = :id
   ");
 
@@ -168,6 +220,8 @@ try {
     ":reviewed_at" => $now,
     ":set_resolved_at" => ($incidentPhase === "RESOLVED") ? 1 : 0,
     ":resolved_at" => $now,
+    ":verification_status_duplicate" => $verificationStatus === "DUPLICATE" ? 1 : 0,
+    ":duplicate_of_id" => $duplicateOfId,
     ":id" => $id
   ]);
 
@@ -198,6 +252,8 @@ try {
     $notes,
     $adminId
   ]);
+
+  $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
 
   write_audit_log(
   $pdo,
@@ -233,7 +289,6 @@ try {
   ]
 );
 
-  $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
   $oldVerification = strtoupper((string)($old["verification_status"] ?? ""));
 
   if (

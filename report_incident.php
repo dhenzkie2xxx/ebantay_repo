@@ -170,6 +170,7 @@ function find_duplicate_incident(
   int $distanceThresholdMeters = 200,
   int $timeThresholdSeconds = 7200
 ): ?array {
+
   $stmt = $pdo->prepare("
     SELECT
       id,
@@ -181,38 +182,90 @@ function find_duplicate_incident(
       lng,
       date_incident_from,
       created_at,
-      verification_status
+      verification_status,
+      duplicate_of_id
     FROM incident_reports
     WHERE reporter_user_id <> ?
       AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
       AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
       AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
-    ORDER BY created_at DESC
+    ORDER BY created_at ASC
     LIMIT 80
   ");
+
   $stmt->execute([$userId, $incidentType]);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   $needle = normalize_narrative_for_match($narrative);
 
   foreach ($rows as $r) {
-    $distanceM = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
+
+    $distanceM = haversineMeters(
+      $lat,
+      $lng,
+      (float)$r['lat'],
+      (float)$r['lng']
+    );
+
     if ($distanceM > $distanceThresholdMeters) {
       continue;
     }
 
     $baseTime = (string)($r['date_incident_from'] ?: $r['created_at']);
-    $timeDiffSec = abs(strtotime((string)$dateIncidentFromSql) - strtotime($baseTime));
+
+    $timeDiffSec = abs(
+      strtotime((string)$dateIncidentFromSql) - strtotime($baseTime)
+    );
+
     if ($timeDiffSec > $timeThresholdSeconds) {
       continue;
     }
 
-    $existingNarrative = normalize_narrative_for_match((string)$r['narrative']);
+    $existingNarrative = normalize_narrative_for_match(
+      (string)$r['narrative']
+    );
+
     $similarity = null;
 
     if ($needle !== '' && $existingNarrative !== '') {
       similar_text($needle, $existingNarrative, $percent);
       $similarity = round($percent, 2);
+    }
+
+    /*
+      IMPORTANT CHANGE:
+      If matched report is already a duplicate,
+      always use the ORIGINAL parent incident.
+    */
+
+    $rootId = (int)($r['duplicate_of_id'] ?? 0);
+
+    if ($rootId > 0) {
+
+      $rootStmt = $pdo->prepare("
+        SELECT
+          id,
+          incident_code,
+          reporter_user_id,
+          incident_type,
+          narrative,
+          lat,
+          lng,
+          date_incident_from,
+          created_at,
+          verification_status
+        FROM incident_reports
+        WHERE id = ?
+        LIMIT 1
+      ");
+
+      $rootStmt->execute([$rootId]);
+
+      $root = $rootStmt->fetch(PDO::FETCH_ASSOC);
+
+      if ($root) {
+        $r = $root;
+      }
     }
 
     $r['distance_m'] = (int) round($distanceM);

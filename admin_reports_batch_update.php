@@ -96,6 +96,9 @@ try {
       reporter_user_id,
       lat,
       lng,
+      incident_type,
+      created_at,
+      duplicate_of_id,
       verification_status,
       incident_phase,
       case_status
@@ -127,6 +130,22 @@ try {
         resolved_at = CASE
           WHEN ? = 'RESOLVED' OR ? = 'CLOSED' THEN ?
           ELSE resolved_at
+        END,
+        duplicate_of_id = CASE
+          WHEN ? = 'DUPLICATE' THEN ?
+          ELSE NULL
+        END,
+        duplicate_distance_m = CASE
+          WHEN ? = 'DUPLICATE' THEN duplicate_distance_m
+          ELSE NULL
+        END,
+        duplicate_similarity = CASE
+          WHEN ? = 'DUPLICATE' THEN duplicate_similarity
+          ELSE NULL
+        END,
+        duplicate_time_diff_sec = CASE
+          WHEN ? = 'DUPLICATE' THEN duplicate_time_diff_sec
+          ELSE NULL
         END
     WHERE id = ?
   ");
@@ -152,6 +171,36 @@ try {
     $oldPhase = strtoupper((string)($row["incident_phase"] ?? ""));
     $oldCase = strtoupper((string)($row["case_status"] ?? ""));
 
+    $duplicateOfId = null;
+
+    if ($verificationStatus === "DUPLICATE") {
+      $basisStmt = $pdo->prepare("
+        SELECT
+          id,
+          duplicate_of_id
+        FROM incident_reports
+        WHERE id <> ?
+          AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
+          AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
+          AND created_at <= ?
+        ORDER BY created_at ASC
+        LIMIT 1
+      ");
+
+      $basisStmt->execute([
+        (int)$row["id"],
+        (string)$row["incident_type"],
+        (string)$row["created_at"]
+      ]);
+
+      $basis = $basisStmt->fetch(PDO::FETCH_ASSOC);
+
+      if ($basis) {
+        $basisParentId = (int)($basis["duplicate_of_id"] ?? 0);
+        $duplicateOfId = $basisParentId > 0 ? $basisParentId : (int)$basis["id"];
+      }
+    }
+
     $upd->execute([
       $verificationStatus,
       $incidentPhase,
@@ -160,6 +209,10 @@ try {
       $adminId,
       $verificationStatus, $now,
       $incidentPhase, $caseStatus, $now,
+      $verificationStatus, $duplicateOfId,
+      $verificationStatus,
+      $verificationStatus,
+      $verificationStatus,
       $row["id"]
     ]);
 

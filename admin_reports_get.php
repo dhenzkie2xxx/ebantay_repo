@@ -28,7 +28,7 @@ function normalize_narrative_for_match(string $text): string {
   return trim($text);
 }
 
-function find_duplicate_candidate_for_admin(PDO $pdo, array $report): ?array {
+function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
   $incidentId = (int)($report["id"] ?? 0);
   $incidentType = trim((string)($report["incident_type"] ?? ""));
   $lat = isset($report["lat"]) ? (float)$report["lat"] : null;
@@ -36,15 +36,22 @@ function find_duplicate_candidate_for_admin(PDO $pdo, array $report): ?array {
   $narrative = (string)($report["narrative"] ?? "");
   $dateIncidentFrom = (string)($report["date_incident_from"] ?? "");
   $createdAt = (string)($report["created_at"] ?? "");
+  $duplicateOfId = (int)($report["duplicate_of_id"] ?? 0);
 
   if ($incidentId <= 0 || $incidentType === "" || $lat === null || $lng === null) {
-    return null;
+    return [];
   }
 
   $baseTime = $dateIncidentFrom !== "" ? $dateIncidentFrom : $createdAt;
   if ($baseTime === "") {
-    return null;
+    return [];
   }
+
+  /*
+    If current report is already marked as duplicate,
+    use its original parent as the basis.
+  */
+  $basisId = $duplicateOfId > 0 ? $duplicateOfId : $incidentId;
 
   $stmt = $pdo->prepare("
     SELECT
@@ -62,35 +69,56 @@ function find_duplicate_candidate_for_admin(PDO $pdo, array $report): ?array {
       case_status,
       barangay,
       city_municipality,
-      province
+      province,
+      duplicate_of_id,
+      duplicate_distance_m,
+      duplicate_similarity,
+      duplicate_time_diff_sec
     FROM incident_reports
     WHERE id <> ?
       AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
       AND lat IS NOT NULL
       AND lng IS NOT NULL
       AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
-      AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
-    ORDER BY created_at DESC
+      AND (
+        id = ?
+        OR duplicate_of_id = ?
+        OR created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
+      )
+    ORDER BY created_at ASC
     LIMIT 80
   ");
-  $stmt->execute([$incidentId, $incidentType]);
+
+  $stmt->execute([
+    $incidentId,
+    $incidentType,
+    $basisId,
+    $basisId
+  ]);
+
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   $needle = normalize_narrative_for_match($narrative);
-
-  $best = null;
-  $bestScore = -1;
+  $matches = [];
 
   foreach ($rows as $r) {
+    $isAlreadyLinked =
+      (int)$r["id"] === $basisId ||
+      (int)($r["duplicate_of_id"] ?? 0) === $basisId;
+
     $distanceM = haversineMeters($lat, $lng, (float)$r["lat"], (float)$r["lng"]);
-    if ($distanceM > 200) {
-      continue;
-    }
 
     $candidateBaseTime = (string)($r["date_incident_from"] ?: $r["created_at"]);
     $timeDiffSec = abs(strtotime($baseTime) - strtotime($candidateBaseTime));
-    if ($timeDiffSec > 7200) {
-      continue;
+
+    if (!$isAlreadyLinked) {
+      if ($distanceM > 200) {
+        continue;
+      }
+
+      if ($timeDiffSec > 7200) {
+        continue;
+      }
     }
 
     $existingNarrative = normalize_narrative_for_match((string)($r["narrative"] ?? ""));
@@ -101,38 +129,38 @@ function find_duplicate_candidate_for_admin(PDO $pdo, array $report): ?array {
       $similarity = round($percent, 2);
     }
 
-    // Weighted score for choosing the best candidate only.
-    $score = 0;
-    $score += max(0, 200 - $distanceM);               // closer is better
-    $score += max(0, 7200 - $timeDiffSec) / 60;       // nearer in time is better
-    $score += $similarity !== null ? $similarity : 0; // narrative helps but is not required
-
-    if ($score > $bestScore) {
-      $bestScore = $score;
-      $best = [
-        "id" => (int)$r["id"],
-        "incident_code" => $r["incident_code"],
-        "reporter_user_id" => $r["reporter_user_id"] !== null ? (int)$r["reporter_user_id"] : null,
-        "incident_type" => $r["incident_type"],
-        "verification_status" => $r["verification_status"],
-        "incident_phase" => $r["incident_phase"],
-        "case_status" => $r["case_status"],
-        "barangay" => $r["barangay"],
-        "city_municipality" => $r["city_municipality"],
-        "province" => $r["province"],
-        "distance_m" => (int)round($distanceM),
-        "time_diff_sec" => (int)$timeDiffSec,
-        "text_similarity" => $similarity,
-        "rule_basis" => [
-          "same_incident_type" => true,
-          "distance_threshold_m" => 200,
-          "time_threshold_sec" => 7200
-        ]
-      ];
+    $candidateRootId = (int)($r["duplicate_of_id"] ?? 0);
+    if ($candidateRootId <= 0) {
+      $candidateRootId = (int)$r["id"];
     }
+
+    $matches[] = [
+      "id" => (int)$r["id"],
+      "incident_code" => $r["incident_code"],
+      "reporter_user_id" => $r["reporter_user_id"] !== null ? (int)$r["reporter_user_id"] : null,
+      "incident_type" => $r["incident_type"],
+      "verification_status" => $r["verification_status"],
+      "incident_phase" => $r["incident_phase"],
+      "case_status" => $r["case_status"],
+      "barangay" => $r["barangay"],
+      "city_municipality" => $r["city_municipality"],
+      "province" => $r["province"],
+      "duplicate_of_id" => (int)($r["duplicate_of_id"] ?? 0),
+      "basis_incident_id" => $candidateRootId,
+      "is_basis_report" => (int)$r["id"] === $basisId,
+      "is_already_linked" => $isAlreadyLinked,
+      "distance_m" => (int)round($distanceM),
+      "time_diff_sec" => (int)$timeDiffSec,
+      "text_similarity" => $similarity,
+      "rule_basis" => [
+        "same_incident_type" => true,
+        "distance_threshold_m" => 200,
+        "time_threshold_sec" => 7200
+      ]
+    ];
   }
 
-  return $best;
+  return $matches;
 }
 
 $id = (int)($_GET["id"] ?? 0);
@@ -195,7 +223,8 @@ $pc = $pdo->prepare("SELECT COUNT(*) c FROM incident_report_photos WHERE inciden
 $pc->execute([$id]);
 $photosCount = (int)($pc->fetch(PDO::FETCH_ASSOC)["c"] ?? 0);
 
-$duplicateCandidate = find_duplicate_candidate_for_admin($pdo, $r);
+$duplicateCandidates = find_duplicate_candidates_for_admin($pdo, $r);
+$duplicateCandidate = count($duplicateCandidates) > 0 ? $duplicateCandidates[0] : null;
 
 echo json_encode([
   "ok" => true,
@@ -267,6 +296,10 @@ echo json_encode([
       "email" => $r["email"],
       "username" => $r["username"]
     ],
+    "duplicate_of_id" => $r["duplicate_of_id"] !== null ? (int)$r["duplicate_of_id"] : null,
+    "duplicate_distance_m" => $r["duplicate_distance_m"] !== null ? (int)$r["duplicate_distance_m"] : null,
+    "duplicate_similarity" => $r["duplicate_similarity"] !== null ? (float)$r["duplicate_similarity"] : null,
+    "duplicate_time_diff_sec" => $r["duplicate_time_diff_sec"] !== null ? (int)$r["duplicate_time_diff_sec"] : null,
     "duplicate_candidate" => $duplicateCandidate ? [
       "exists" => true,
       "id" => $duplicateCandidate["id"],
@@ -285,6 +318,29 @@ echo json_encode([
       "rule_basis" => $duplicateCandidate["rule_basis"]
     ] : [
       "exists" => false
-    ]
-  ]
+    ],
+    "duplicate_candidates" => array_map(function($d) {
+      return [
+        "exists" => true,
+        "id" => $d["id"],
+        "incident_code" => $d["incident_code"],
+        "reporter_user_id" => $d["reporter_user_id"],
+        "incident_type" => $d["incident_type"],
+        "verification_status" => $d["verification_status"],
+        "incident_phase" => $d["incident_phase"],
+        "case_status" => $d["case_status"],
+        "barangay" => $d["barangay"],
+        "city_municipality" => $d["city_municipality"],
+        "province" => $d["province"],
+        "duplicate_of_id" => $d["duplicate_of_id"],
+        "basis_incident_id" => $d["basis_incident_id"],
+        "is_basis_report" => $d["is_basis_report"],
+        "is_already_linked" => $d["is_already_linked"],
+        "distance_m" => $d["distance_m"],
+        "time_diff_sec" => $d["time_diff_sec"],
+        "text_similarity" => $d["text_similarity"],
+        "rule_basis" => $d["rule_basis"]
+      ];
+    }, $duplicateCandidates)
+      ]
 ]);
