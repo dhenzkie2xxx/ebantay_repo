@@ -92,52 +92,6 @@ function http_get_json(string $url): array {
   return ["ok" => true, "json" => $json];
 }
 
-function resolve_scope_from_city(PDO $pdo, ?string $cityMunicipality): array {
-  $cityMunicipality = normalize_scope_value($cityMunicipality);
-  if (!$cityMunicipality) {
-    return [
-      "province" => null,
-      "region" => null,
-      "city_municipality" => null,
-    ];
-  }
-
-  $sql = "
-    SELECT
-      c.canonical_name AS city_municipality,
-      p.canonical_name AS province,
-      r.canonical_name AS region
-    FROM location_cities c
-    INNER JOIN location_provinces p ON p.id = c.province_id
-    INNER JOIN location_regions r ON r.id = p.region_id
-    WHERE LOWER(TRIM(c.canonical_name)) = LOWER(TRIM(?))
-
-    UNION
-
-    SELECT
-      c.canonical_name AS city_municipality,
-      p.canonical_name AS province,
-      r.canonical_name AS region
-    FROM location_city_aliases a
-    INNER JOIN location_cities c ON c.id = a.city_id
-    INNER JOIN location_provinces p ON p.id = c.province_id
-    INNER JOIN location_regions r ON r.id = p.region_id
-    WHERE LOWER(TRIM(a.alias_name)) = LOWER(TRIM(?))
-
-    LIMIT 1
-  ";
-
-  $stmt = $pdo->prepare($sql);
-  $stmt->execute([$cityMunicipality, $cityMunicipality]);
-  $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-  return [
-    "province" => normalize_scope_value($row["province"] ?? null),
-    "region" => normalize_scope_value($row["region"] ?? null),
-    "city_municipality" => normalize_scope_value($row["city_municipality"] ?? $cityMunicipality),
-  ];
-}
-
 function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
   $url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat="
     . urlencode((string)$lat)
