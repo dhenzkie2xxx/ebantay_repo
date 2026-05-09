@@ -53,15 +53,7 @@ function station_area_has_assignments(PDO $pdo, int $stationId): bool {
   return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
 }
 
-/**
- * Find the station responsible for a reported barangay.
- *
- * Rule:
- * 1. If a barangay is assigned in station_area_barangays, use that station.
- * 2. If no barangay assignment exists for that city/municipality, fall back to nearest city station.
- * 3. If city has assignments but the barangay is unassigned, fall back to nearest station in city.
- *    This avoids losing reports when barangay geocoding spelling is different.
- */
+
 function find_station_by_area_of_responsibility(
   PDO $pdo,
   float $lat,
@@ -78,6 +70,10 @@ function find_station_by_area_of_responsibility(
     return null;
   }
 
+  /*
+   * Priority 1:
+   * If barangay is assigned to a station, use that station.
+   */
   if ($barangay) {
     $stmt = $pdo->prepare("
       SELECT
@@ -104,23 +100,11 @@ function find_station_by_area_of_responsibility(
   }
 
   /*
-   * If there are no barangay assignments at all in this city,
-   * default behavior remains: nearest station inside the city.
+   * Priority 2:
+   * Barangay is not assigned or cannot be matched.
+   * Route to nearest active approved station in the same city/municipality,
+   * even if that station already has assigned barangays.
    */
-  $hasCityAssignmentsStmt = $pdo->prepare("
-    SELECT sab.id
-    FROM station_area_barangays sab
-    INNER JOIN police_stations ps
-      ON ps.id = sab.station_id
-    WHERE ps.verification_status = 'approved'
-      AND ps.is_active = 1
-      AND LOWER(TRIM(sab.province)) = LOWER(TRIM(?))
-      AND LOWER(TRIM(sab.city_municipality)) = LOWER(TRIM(?))
-    LIMIT 1
-  ");
-  $hasCityAssignmentsStmt->execute([$province, $cityMunicipality]);
-  $hasCityAssignments = (bool)$hasCityAssignmentsStmt->fetch(PDO::FETCH_ASSOC);
-
   $stmt = $pdo->prepare("
     SELECT
       ps.*,
@@ -145,9 +129,9 @@ function find_station_by_area_of_responsibility(
   $fallback = $stmt->fetch(PDO::FETCH_ASSOC);
 
   if ($fallback) {
-    $fallback["_assignment_rule"] = $hasCityAssignments
-      ? "AREA_UNASSIGNED_BARANGAY_CITY_FALLBACK"
-      : "NO_AREA_ASSIGNED_CITY_DEFAULT";
+    $fallback["_assignment_rule"] = $barangay
+      ? "UNASSIGNED_BARANGAY_NEAREST_CITY_STATION"
+      : "UNKNOWN_BARANGAY_NEAREST_CITY_STATION";
 
     return $fallback;
   }
