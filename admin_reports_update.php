@@ -12,6 +12,23 @@ function out($code, $payload) {
   exit;
 }
 
+function duplicate_crime_group(string $incidentType): string {
+  $name = strtolower(trim($incidentType));
+
+  if ($name === "") return "";
+
+  if (str_contains($name, "murder") || str_contains($name, "homicide")) return "death_related";
+  if (str_contains($name, "robbery") || str_contains($name, "theft")) return "property_taking";
+  if (str_contains($name, "physical injury")) return "physical_injury";
+  if (str_contains($name, "rape") || str_contains($name, "lasciviousness")) return "sexual_offense";
+  if (str_contains($name, "carnapping")) return "carnapping";
+  if (str_contains($name, "drug")) return "drug_related";
+  if (str_contains($name, "firearm") || str_contains($name, "firearms")) return "firearms_related";
+  if (str_contains($name, "cybercrime") || str_contains($name, "10175")) return "cybercrime";
+
+  return $name;
+}
+
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
@@ -107,6 +124,7 @@ try {
       id,
       title,
       reporter_user_id,
+      incident_type,
       verification_status,
       incident_phase,
       case_status,
@@ -146,18 +164,18 @@ try {
   $duplicateTimeDiffSec = null;
 
   if ($verificationStatus === "DUPLICATE") {
+    $targetCrimeGroup = duplicate_crime_group((string)$old["incident_type"]);
+
     $basisStmt = $pdo->prepare("
       SELECT
         id,
+        incident_type,
         duplicate_of_id,
         duplicate_distance_m,
         duplicate_similarity,
         duplicate_time_diff_sec
       FROM incident_reports
       WHERE id <> ?
-        AND incident_type = (
-          SELECT incident_type FROM incident_reports WHERE id = ? LIMIT 1
-        )
         AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
         AND created_at >= DATE_SUB(
           (SELECT created_at FROM incident_reports WHERE id = ? LIMIT 1),
@@ -167,15 +185,20 @@ try {
           SELECT created_at FROM incident_reports WHERE id = ? LIMIT 1
         )
       ORDER BY created_at ASC
-      LIMIT 1
+      LIMIT 30
     ");
 
-    $basisStmt->execute([$id, $id, $id, $id]);
-    $basis = $basisStmt->fetch(PDO::FETCH_ASSOC);
+    $basisStmt->execute([$id, $id, $id]);
+    $basisRows = $basisStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if ($basis) {
+    foreach ($basisRows as $basis) {
+      if (duplicate_crime_group((string)$basis["incident_type"]) !== $targetCrimeGroup) {
+        continue;
+      }
+
       $basisParentId = (int)($basis["duplicate_of_id"] ?? 0);
       $duplicateOfId = $basisParentId > 0 ? $basisParentId : (int)$basis["id"];
+      break;
     }
   }
 
@@ -192,25 +215,25 @@ try {
         ELSE reviewed_at
       END,
       resolved_at = CASE
-      WHEN :set_resolved_at = 1 THEN :resolved_at
-      ELSE resolved_at
-    END,
-    duplicate_of_id = CASE
-      WHEN :verification_status_duplicate = 1 THEN :duplicate_of_id
-      ELSE NULL
-    END,
-    duplicate_distance_m = CASE
-      WHEN :verification_status_duplicate = 1 THEN duplicate_distance_m
-      ELSE NULL
-    END,
-    duplicate_similarity = CASE
-      WHEN :verification_status_duplicate = 1 THEN duplicate_similarity
-      ELSE NULL
-    END,
-    duplicate_time_diff_sec = CASE
-      WHEN :verification_status_duplicate = 1 THEN duplicate_time_diff_sec
-      ELSE NULL
-    END
+        WHEN :set_resolved_at = 1 THEN :resolved_at
+        ELSE resolved_at
+      END,
+      duplicate_of_id = CASE
+        WHEN :verification_status_duplicate = 1 THEN :duplicate_of_id
+        ELSE NULL
+      END,
+      duplicate_distance_m = CASE
+        WHEN :verification_status_duplicate = 1 THEN duplicate_distance_m
+        ELSE NULL
+      END,
+      duplicate_similarity = CASE
+        WHEN :verification_status_duplicate = 1 THEN duplicate_similarity
+        ELSE NULL
+      END,
+      duplicate_time_diff_sec = CASE
+        WHEN :verification_status_duplicate = 1 THEN duplicate_time_diff_sec
+        ELSE NULL
+      END
     WHERE id = :id
   ");
 
@@ -260,38 +283,39 @@ try {
   $reporterUserId = (int)($old["reporter_user_id"] ?? 0);
 
   write_audit_log(
-  $pdo,
-  $AUTH_USER,
-  $verificationStatus === "VERIFIED"
-    ? "INCIDENT_VERIFIED"
-    : ($verificationStatus === "FALSE_REPORT"
-      ? "INCIDENT_FALSE_REPORT_MARKED"
-      : ($incidentPhase === "REJECTED"
-        ? "INCIDENT_REJECTED"
-        : ($incidentPhase === "RESOLVED"
-          ? "INCIDENT_RESOLVED"
-          : "INCIDENT_STATUS_UPDATED"))),
-  "incident_report",
-  $id,
-  "Station Admin updated incident report status.",
-  [
-    "module" => "incident_reports",
-    "incident_id" => $id,
-    "target_user_id" => $reporterUserId > 0 ? $reporterUserId : null,
-    "old_values" => [
-      "verification_status" => $old["verification_status"],
-      "incident_phase" => $old["incident_phase"],
-      "case_status" => $old["case_status"]
-    ],
-    "new_values" => [
-      "verification_status" => $verificationStatus,
-      "incident_phase" => $incidentPhase,
-      "case_status" => $caseStatus,
-      "admin_notes" => $notes !== "" ? $notes : null,
-      "reviewed_by" => $adminId
+    $pdo,
+    $AUTH_USER,
+    $verificationStatus === "VERIFIED"
+      ? "INCIDENT_VERIFIED"
+      : ($verificationStatus === "FALSE_REPORT"
+        ? "INCIDENT_FALSE_REPORT_MARKED"
+        : ($incidentPhase === "REJECTED"
+          ? "INCIDENT_REJECTED"
+          : ($incidentPhase === "RESOLVED"
+            ? "INCIDENT_RESOLVED"
+            : "INCIDENT_STATUS_UPDATED"))),
+    "incident_report",
+    $id,
+    "Station Admin updated incident report status.",
+    [
+      "module" => "incident_reports",
+      "incident_id" => $id,
+      "target_user_id" => $reporterUserId > 0 ? $reporterUserId : null,
+      "old_values" => [
+        "verification_status" => $old["verification_status"],
+        "incident_phase" => $old["incident_phase"],
+        "case_status" => $old["case_status"]
+      ],
+      "new_values" => [
+        "verification_status" => $verificationStatus,
+        "incident_phase" => $incidentPhase,
+        "case_status" => $caseStatus,
+        "admin_notes" => $notes !== "" ? $notes : null,
+        "reviewed_by" => $adminId,
+        "duplicate_of_id" => $duplicateOfId
+      ]
     ]
-  ]
-);
+  );
 
   $oldVerification = strtoupper((string)($old["verification_status"] ?? ""));
 
@@ -341,10 +365,6 @@ try {
     );
   }
 
-  /*
-    Auto hotspot detection:
-    Trigger when an incident becomes VERIFIED and is in a valid historical/active phase.
-  */
   $hotspotResult = null;
 
   if (

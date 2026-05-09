@@ -62,6 +62,61 @@ function normalize_narrative_for_match(string $text): string {
   return trim($text);
 }
 
+function duplicate_crime_group(string $incidentType): string {
+  $name = strtolower(trim($incidentType));
+
+  if ($name === "") return "";
+
+  if (
+    str_contains($name, "murder") ||
+    str_contains($name, "homicide")
+  ) {
+    return "death_related";
+  }
+
+  if (
+    str_contains($name, "robbery") ||
+    str_contains($name, "theft")
+  ) {
+    return "property_taking";
+  }
+
+  if (str_contains($name, "physical injury")) {
+    return "physical_injury";
+  }
+
+  if (
+    str_contains($name, "rape") ||
+    str_contains($name, "lasciviousness")
+  ) {
+    return "sexual_offense";
+  }
+
+  if (str_contains($name, "carnapping")) {
+    return "carnapping";
+  }
+
+  if (str_contains($name, "drug")) {
+    return "drug_related";
+  }
+
+  if (
+    str_contains($name, "firearm") ||
+    str_contains($name, "firearms")
+  ) {
+    return "firearms_related";
+  }
+
+  if (
+    str_contains($name, "cybercrime") ||
+    str_contains($name, "10175")
+  ) {
+    return "cybercrime";
+  }
+
+  return $name;
+}
+
 function compute_severity_score(
   string $crimeCategory,
   int $victimCount,
@@ -131,20 +186,25 @@ function find_recent_same_user_incident(
   string $dateIncidentFromSql,
   int $windowMinutes = 20
 ): ?array {
+  $targetCrimeGroup = duplicate_crime_group($incidentType);
+
   $stmt = $pdo->prepare("
     SELECT id, incident_code, incident_type, lat, lng, date_incident_from, created_at
     FROM incident_reports
     WHERE reporter_user_id = ?
-      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
       AND created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
       AND verification_status <> 'FALSE_REPORT'
     ORDER BY created_at DESC
-    LIMIT 10
+    LIMIT 20
   ");
-  $stmt->execute([$userId, $incidentType, $windowMinutes]);
+  $stmt->execute([$userId, $windowMinutes]);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   foreach ($rows as $r) {
+    if (duplicate_crime_group((string)$r["incident_type"]) !== $targetCrimeGroup) {
+      continue;
+    }
+
     $d = haversineMeters($lat, $lng, (float)$r['lat'], (float)$r['lng']);
     $baseTime = (string)($r['date_incident_from'] ?: $r['created_at']);
     $timeDiff = abs(strtotime((string)$dateIncidentFromSql) - strtotime($baseTime));
@@ -186,19 +246,22 @@ function find_duplicate_incident(
       duplicate_of_id
     FROM incident_reports
     WHERE reporter_user_id <> ?
-      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
       AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
       AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
     ORDER BY created_at ASC
     LIMIT 80
   ");
 
-  $stmt->execute([$userId, $incidentType]);
+  $stmt->execute([$userId]);
   $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   $needle = normalize_narrative_for_match($narrative);
+  $targetCrimeGroup = duplicate_crime_group($incidentType);
 
   foreach ($rows as $r) {
+    if (duplicate_crime_group((string)$r["incident_type"]) !== $targetCrimeGroup) {
+      continue;
+    }
 
     $distanceM = haversineMeters(
       $lat,
@@ -232,12 +295,6 @@ function find_duplicate_incident(
       $similarity = round($percent, 2);
     }
 
-    /*
-      IMPORTANT CHANGE:
-      If matched report is already a duplicate,
-      always use the ORIGINAL parent incident.
-    */
-
     $rootId = (int)($r['duplicate_of_id'] ?? 0);
 
     if ($rootId > 0) {
@@ -264,6 +321,13 @@ function find_duplicate_incident(
       $root = $rootStmt->fetch(PDO::FETCH_ASSOC);
 
       if ($root) {
+        if (duplicate_crime_group((string)$root["incident_type"]) !== $targetCrimeGroup) {
+          $r['distance_m'] = (int) round($distanceM);
+          $r['time_diff_sec'] = (int) $timeDiffSec;
+          $r['text_similarity'] = $similarity;
+          return $r;
+        }
+
         $rootDistanceM = haversineMeters(
           $lat,
           $lng,
@@ -274,11 +338,6 @@ function find_duplicate_incident(
         $rootBaseTime = (string)($root["date_incident_from"] ?: $root["created_at"]);
         $rootTimeDiffSec = abs(strtotime((string)$dateIncidentFromSql) - strtotime($rootBaseTime));
 
-        /*
-          Only use the original parent if it is still within
-          the duplicate detection rules.
-          This prevents old reports from previous years from becoming basis reports.
-        */
         if (
           $rootDistanceM <= $distanceThresholdMeters &&
           $rootTimeDiffSec <= $timeThresholdSeconds
@@ -404,38 +463,38 @@ function reverse_geocode_scope(PDO $pdo, float $lat, float $lng): array {
   $road = $addr["road"] ?? "";
   $displayName = $json["display_name"] ?? "";
 
-$barangayCanonical = null;
+  $barangayCanonical = null;
 
-if ($province !== "" && $cityMunicipality !== "" && $barangay !== "") {
-  $scope = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
+  if ($province !== "" && $cityMunicipality !== "" && $barangay !== "") {
+    $scope = canonicalize_scope($pdo, $region, $province, $cityMunicipality);
 
-  if (!empty($scope["ok"])) {
-    $province = $scope["province"];
-    $cityMunicipality = $scope["city_municipality"];
-    $region = $scope["region"] ?? $region;
+    if (!empty($scope["ok"])) {
+      $province = $scope["province"];
+      $cityMunicipality = $scope["city_municipality"];
+      $region = $scope["region"] ?? $region;
 
-    if (function_exists("resolve_barangay")) {
-      $barangayCanonical = resolve_barangay(
-        $pdo,
-        $province,
-        $cityMunicipality,
-        $barangay
-      );
+      if (function_exists("resolve_barangay")) {
+        $barangayCanonical = resolve_barangay(
+          $pdo,
+          $province,
+          $cityMunicipality,
+          $barangay
+        );
+      }
     }
   }
-}
 
-return [
-  "ok" => true,
-  "address" => [
-    "barangay" => normalize_scope_value($barangayCanonical ?: $barangay),
-    "city_municipality" => normalize_scope_value($cityMunicipality),
-    "province" => normalize_scope_value($province),
-    "region" => normalize_scope_value($region),
-    "place_of_incident" => normalize_scope_value($road),
-    "display_name" => normalize_scope_value($displayName)
-  ]
-];
+  return [
+    "ok" => true,
+    "address" => [
+      "barangay" => normalize_scope_value($barangayCanonical ?: $barangay),
+      "city_municipality" => normalize_scope_value($cityMunicipality),
+      "province" => normalize_scope_value($province),
+      "region" => normalize_scope_value($region),
+      "place_of_incident" => normalize_scope_value($road),
+      "display_name" => normalize_scope_value($displayName)
+    ]
+  ];
 }
 
 function can_user_use_protected_features(array $user): bool {
@@ -571,7 +630,7 @@ try {
     ]);
   }
 
-$geo = reverse_geocode_scope($pdo, $lat, $lng);
+  $geo = reverse_geocode_scope($pdo, $lat, $lng);
 
   $barangay = null;
   $cityMunicipality = null;
@@ -789,6 +848,13 @@ $geo = reverse_geocode_scope($pdo, $lat, $lng);
   $verificationStatus = 'PENDING';
   $incidentCode = generate_incident_code($pdo);
 
+  $duplicateOfId = $duplicateOf ? (int)$duplicateOf["id"] : null;
+  $duplicateDistanceM = $duplicateOf ? (int)($duplicateOf["distance_m"] ?? 0) : null;
+  $duplicateSimilarity = ($duplicateOf && $duplicateOf["text_similarity"] !== null)
+    ? (float)$duplicateOf["text_similarity"]
+    : null;
+  $duplicateTimeDiffSec = $duplicateOf ? (int)($duplicateOf["time_diff_sec"] ?? 0) : null;
+
   $pdo->beginTransaction();
 
   $stmt = $pdo->prepare("
@@ -829,11 +895,15 @@ $geo = reverse_geocode_scope($pdo, $lat, $lng);
       device_time,
       report_delay_minutes,
       severity_score,
+      duplicate_of_id,
+      duplicate_distance_m,
+      duplicate_similarity,
+      duplicate_time_diff_sec,
       created_at,
       updated_at
     ) VALUES (
       ?, ?, 'mobile_app', 'mobile', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GPS',
-      ?, ?, ?, ?, ?, 'REPORTED', ?, 'OPEN', ?, ?, ?, NOW(), NOW()
+      ?, ?, ?, ?, ?, 'REPORTED', ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()
     )
   ");
 
@@ -868,7 +938,11 @@ $geo = reverse_geocode_scope($pdo, $lat, $lng);
     $verificationStatus,
     $deviceTimeSql,
     $reportDelayMinutes,
-    $severityScore
+    $severityScore,
+    $duplicateOfId,
+    $duplicateDistanceM,
+    $duplicateSimilarity,
+    $duplicateTimeDiffSec
   ]);
 
   $incidentId = (int)$pdo->lastInsertId();
@@ -1087,13 +1161,15 @@ $geo = reverse_geocode_scope($pdo, $lat, $lng);
       "is_duplicate_candidate" => true,
       "matched_incident_id" => (int)$duplicateOf["id"],
       "matched_incident_code" => $duplicateOf["incident_code"],
+      "matched_incident_type" => $duplicateOf["incident_type"] ?? null,
+      "crime_group" => duplicate_crime_group($incidentType),
       "distance_m" => (int)($duplicateOf["distance_m"] ?? 0),
       "time_diff_sec" => (int)($duplicateOf["time_diff_sec"] ?? 0),
       "text_similarity" => $duplicateOf["text_similarity"] !== null
         ? (float)$duplicateOf["text_similarity"]
         : null,
       "rule_basis" => [
-        "same_incident_type" => true,
+        "same_or_similar_incident_type" => true,
         "distance_threshold_m" => 200,
         "time_threshold_sec" => 7200
       ]

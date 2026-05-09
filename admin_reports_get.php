@@ -28,6 +28,23 @@ function normalize_narrative_for_match(string $text): string {
   return trim($text);
 }
 
+function duplicate_crime_group(string $incidentType): string {
+  $name = strtolower(trim($incidentType));
+
+  if ($name === "") return "";
+
+  if (str_contains($name, "murder") || str_contains($name, "homicide")) return "death_related";
+  if (str_contains($name, "robbery") || str_contains($name, "theft")) return "property_taking";
+  if (str_contains($name, "physical injury")) return "physical_injury";
+  if (str_contains($name, "rape") || str_contains($name, "lasciviousness")) return "sexual_offense";
+  if (str_contains($name, "carnapping")) return "carnapping";
+  if (str_contains($name, "drug")) return "drug_related";
+  if (str_contains($name, "firearm") || str_contains($name, "firearms")) return "firearms_related";
+  if (str_contains($name, "cybercrime") || str_contains($name, "10175")) return "cybercrime";
+
+  return $name;
+}
+
 function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
   $incidentId = (int)($report["id"] ?? 0);
   $incidentType = trim((string)($report["incident_type"] ?? ""));
@@ -43,6 +60,8 @@ function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
   }
 
   $baseTime = $dateIncidentFrom !== "" ? $dateIncidentFrom : $createdAt;
+  $targetCrimeGroup = duplicate_crime_group($incidentType);
+
   if ($baseTime === "") {
     return [];
   }
@@ -76,7 +95,6 @@ function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
       duplicate_time_diff_sec
     FROM incident_reports
     WHERE id <> ?
-      AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
       AND lat IS NOT NULL
       AND lng IS NOT NULL
       AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
@@ -91,7 +109,6 @@ function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
 
   $stmt->execute([
     $incidentId,
-    $incidentType,
     $basisId,
     $basisId
   ]);
@@ -101,7 +118,13 @@ function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
   $needle = normalize_narrative_for_match($narrative);
   $matches = [];
 
+  
   foreach ($rows as $r) {
+
+    if (duplicate_crime_group((string)$r["incident_type"]) !== $targetCrimeGroup) {
+      continue;
+    }
+
     $isAlreadyLinked =
       (int)$r["id"] === $basisId ||
       (int)($r["duplicate_of_id"] ?? 0) === $basisId;
@@ -157,7 +180,7 @@ function find_duplicate_candidates_for_admin(PDO $pdo, array $report): array {
       "time_diff_sec" => (int)$timeDiffSec,
       "text_similarity" => $similarity,
       "rule_basis" => [
-        "same_incident_type" => true,
+        "same_or_similar_incident_type" => true,
         "distance_threshold_m" => 200,
         "time_threshold_sec" => 7200
       ]
@@ -343,6 +366,8 @@ echo json_encode([
         "distance_m" => $d["distance_m"],
         "time_diff_sec" => $d["time_diff_sec"],
         "text_similarity" => $d["text_similarity"],
+        "crime_group" => duplicate_crime_group((string)$d["incident_type"]),
+        "same_or_similar_incident_type" => true,
         "rule_basis" => $d["rule_basis"]
       ];
     }, $duplicateCandidates)

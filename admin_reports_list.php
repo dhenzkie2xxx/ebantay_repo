@@ -21,6 +21,23 @@ function haversineMeters($lat1, $lng1, $lat2, $lng2) {
   return 2 * $earth * asin(min(1, sqrt($a)));
 }
 
+function duplicate_crime_group(string $incidentType): string {
+  $name = strtolower(trim($incidentType));
+
+  if ($name === "") return "";
+
+  if (str_contains($name, "murder") || str_contains($name, "homicide")) return "death_related";
+  if (str_contains($name, "robbery") || str_contains($name, "theft")) return "property_taking";
+  if (str_contains($name, "physical injury")) return "physical_injury";
+  if (str_contains($name, "rape") || str_contains($name, "lasciviousness")) return "sexual_offense";
+  if (str_contains($name, "carnapping")) return "carnapping";
+  if (str_contains($name, "drug")) return "drug_related";
+  if (str_contains($name, "firearm") || str_contains($name, "firearms")) return "firearms_related";
+  if (str_contains($name, "cybercrime") || str_contains($name, "10175")) return "cybercrime";
+
+  return $name;
+}
+
 function has_duplicate_candidate(PDO $pdo, array $row): bool {
   if (
     !isset($row["id"], $row["incident_type"], $row["lat"], $row["lng"]) ||
@@ -31,25 +48,28 @@ function has_duplicate_candidate(PDO $pdo, array $row): bool {
     return false;
   }
 
+  $targetCrimeGroup = duplicate_crime_group((string)$row["incident_type"]);
+
   $stmt = $pdo->prepare("
     SELECT
       id,
+      incident_type,
       lat,
       lng,
       date_incident_from,
       created_at
     FROM incident_reports
     WHERE id <> ?
-      AND incident_type = ?
       AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
       AND created_at >= DATE_SUB(NOW(), INTERVAL 6 HOUR)
     ORDER BY created_at DESC
     LIMIT 30
   ");
+
   $stmt->execute([
-    (int)$row["id"],
-    (string)$row["incident_type"]
+    (int)$row["id"]
   ]);
+
   $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
   $baseTime = strtotime((string)($row["date_incident_from"] ?: $row["created_at"]));
@@ -58,6 +78,10 @@ function has_duplicate_candidate(PDO $pdo, array $row): bool {
   }
 
   foreach ($candidates as $c) {
+    if (duplicate_crime_group((string)$c["incident_type"]) !== $targetCrimeGroup) {
+      continue;
+    }
+
     if ($c["lat"] === null || $c["lng"] === null) continue;
 
     $distanceM = haversineMeters(

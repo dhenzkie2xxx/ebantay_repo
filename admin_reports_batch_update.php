@@ -12,6 +12,23 @@ function out($code, $payload) {
   exit;
 }
 
+function duplicate_crime_group(string $incidentType): string {
+  $name = strtolower(trim($incidentType));
+
+  if ($name === "") return "";
+
+  if (str_contains($name, "murder") || str_contains($name, "homicide")) return "death_related";
+  if (str_contains($name, "robbery") || str_contains($name, "theft")) return "property_taking";
+  if (str_contains($name, "physical injury")) return "physical_injury";
+  if (str_contains($name, "rape") || str_contains($name, "lasciviousness")) return "sexual_offense";
+  if (str_contains($name, "carnapping")) return "carnapping";
+  if (str_contains($name, "drug")) return "drug_related";
+  if (str_contains($name, "firearm") || str_contains($name, "firearms")) return "firearms_related";
+  if (str_contains($name, "cybercrime") || str_contains($name, "10175")) return "cybercrime";
+
+  return $name;
+}
+
 $raw = file_get_contents("php://input");
 $data = json_decode($raw, true);
 
@@ -172,15 +189,16 @@ try {
     $oldCase = strtoupper((string)($row["case_status"] ?? ""));
 
     $duplicateOfId = null;
+    $targetCrimeGroup = duplicate_crime_group((string)$row["incident_type"]);
 
     if ($verificationStatus === "DUPLICATE") {
       $basisStmt = $pdo->prepare("
-        SELECT
-          id,
-          duplicate_of_id
+      SELECT
+        id,
+        incident_type,
+        duplicate_of_id
         FROM incident_reports
         WHERE id <> ?
-          AND LOWER(TRIM(incident_type)) = LOWER(TRIM(?))
           AND verification_status IN ('PENDING', 'VERIFIED', 'DUPLICATE')
           AND created_at >= DATE_SUB(?, INTERVAL 12 HOUR)
           AND created_at <= ?
@@ -190,17 +208,22 @@ try {
 
       $basisStmt->execute([
         (int)$row["id"],
-        (string)$row["incident_type"],
         (string)$row["created_at"],
         (string)$row["created_at"]
       ]);
 
-      $basis = $basisStmt->fetch(PDO::FETCH_ASSOC);
+      $basisRows = $basisStmt->fetchAll(PDO::FETCH_ASSOC);
 
-      if ($basis) {
+      foreach ($basisRows as $basis) {
+        if (duplicate_crime_group((string)$basis["incident_type"]) !== $targetCrimeGroup) {
+          continue;
+        }
+
         $basisParentId = (int)($basis["duplicate_of_id"] ?? 0);
         $duplicateOfId = $basisParentId > 0 ? $basisParentId : (int)$basis["id"];
+        break;
       }
+
     }
 
     $upd->execute([
