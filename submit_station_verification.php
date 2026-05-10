@@ -78,7 +78,7 @@ try {
     $missingStationFields[] = "lng";
   }
 
-  $requiredDocs = station_required_document_types();
+  $requiredDocs = station_required_document_types($pdo);
 
   $docStmt = $pdo->prepare("
     SELECT DISTINCT document_type

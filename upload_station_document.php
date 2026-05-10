@@ -12,7 +12,7 @@ $documentType = station_clean($_POST["document_type"] ?? "");
 $documentLabel = station_nullable_string($_POST["document_label"] ?? null);
 $remarks = station_nullable_string($_POST["remarks"] ?? null);
 
-$allowedTypes = station_all_document_types();
+$allowedTypes = station_all_document_types($pdo);
 
 if (!in_array($documentType, $allowedTypes, true)) {
   auth_out(400, ["ok" => false, "message" => "Invalid document type."]);
@@ -81,7 +81,7 @@ try {
     auth_out(403, ["ok" => false, "message" => "Cannot upload in current status."]);
   }
 
-  $isRequired = in_array($documentType, station_required_document_types(), true) ? 1 : 0;
+  $isRequired = in_array($documentType, station_required_document_types($pdo), true) ? 1 : 0;
 
   $stmt = $pdo->prepare("
     INSERT INTO police_station_documents (
