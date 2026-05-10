@@ -1,6 +1,6 @@
 <?php
 
-function sendVerificationEmail($toEmail, $toName, $verifyLink) {
+function sendResendEmail($toEmail, $subject, $html) {
     $apiKey = getenv('RESEND_API_KEY');
     $from   = getenv('MAIL_FROM');
 
@@ -9,32 +9,11 @@ function sendVerificationEmail($toEmail, $toName, $verifyLink) {
         return false;
     }
 
-    $safeName = htmlspecialchars($toName, ENT_QUOTES, 'UTF-8');
-
     $payload = json_encode([
         "from" => $from,
         "to" => [$toEmail],
-        "subject" => "Verify your eBantay account",
-        "html" => "
-            <div style='font-family:Arial,sans-serif'>
-                <h2 style='color:#1D4ED8;'>eBantay Email Verification</h2>
-                <p>Hello <strong>{$safeName}</strong>,</p>
-                <p>Please verify your email by clicking the button below:</p>
-                <p>
-                    <a href='{$verifyLink}' 
-                       style='background:#1D4ED8;
-                              color:white;
-                              padding:10px 18px;
-                              text-decoration:none;
-                              border-radius:5px;'>
-                        Verify Email
-                    </a>
-                </p>
-                <p>If you did not create this account, please ignore this email.</p>
-                <hr>
-                <small>© " . date('Y') . " eBantay Philippines</small>
-            </div>
-        "
+        "subject" => $subject,
+        "html" => $html
     ]);
 
     $ch = curl_init("https://api.resend.com/emails");
@@ -59,6 +38,63 @@ function sendVerificationEmail($toEmail, $toName, $verifyLink) {
     }
 
     return true;
+}
+
+function sendVerificationEmail($toEmail, $toName, $verifyLink) {
+    $safeName = htmlspecialchars($toName, ENT_QUOTES, 'UTF-8');
+    $safeLink = htmlspecialchars($verifyLink, ENT_QUOTES, 'UTF-8');
+
+    $html = "
+        <div style='font-family:Arial,sans-serif'>
+            <h2 style='color:#1D4ED8;'>eBantay Email Verification</h2>
+            <p>Hello <strong>{$safeName}</strong>,</p>
+            <p>Please verify your email by clicking the button below:</p>
+            <p>
+                <a href='{$safeLink}' 
+                   style='background:#1D4ED8;
+                          color:white;
+                          padding:10px 18px;
+                          text-decoration:none;
+                          border-radius:5px;'>
+                    Verify Email
+                </a>
+            </p>
+            <p>If you did not create this account, please ignore this email.</p>
+            <hr>
+            <small>© " . date('Y') . " eBantay Philippines</small>
+        </div>
+    ";
+
+    return sendResendEmail($toEmail, "Verify your eBantay account", $html);
+}
+
+function sendPasswordResetEmail($toEmail, $toName, $resetLink) {
+    $safeName = htmlspecialchars($toName, ENT_QUOTES, 'UTF-8');
+    $safeLink = htmlspecialchars($resetLink, ENT_QUOTES, 'UTF-8');
+
+    $html = "
+        <div style='font-family:Arial,sans-serif'>
+            <h2 style='color:#1D4ED8;'>Reset your eBantay password</h2>
+            <p>Hello <strong>{$safeName}</strong>,</p>
+            <p>We received a request to reset your eBantay account password.</p>
+            <p>
+                <a href='{$safeLink}'
+                   style='background:#1D4ED8;
+                          color:white;
+                          padding:10px 18px;
+                          text-decoration:none;
+                          border-radius:5px;'>
+                    Reset Password
+                </a>
+            </p>
+            <p>This link will expire in 1 hour.</p>
+            <p>If you did not request a password reset, please ignore this email.</p>
+            <hr>
+            <small>© " . date('Y') . " eBantay Philippines</small>
+        </div>
+    ";
+
+    return sendResendEmail($toEmail, "Reset your eBantay password", $html);
 }
 
 ?>
