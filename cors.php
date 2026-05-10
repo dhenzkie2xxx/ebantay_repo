@@ -3,7 +3,8 @@
 $allowed = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  "https://ebantay.top.gen.in"
+  "https://ebantay.top.gen.in",
+  "https://ebantay-admin-repo.vercel.app"
 ];
 
 $origin = $_SERVER["HTTP_ORIGIN"] ?? "";
