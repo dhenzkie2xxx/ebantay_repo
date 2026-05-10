@@ -51,7 +51,7 @@ try {
   $upd->execute([$token, $expires, $user["id"]]);
 
   $appUrl = getenv("APP_URL") ?: "https://ebantay.top.gen.in";
-  $resetLink = "ebantay://reset-password?token=" . urlencode($token);
+  $resetLink = rtrim($appUrl, "/") . "/reset_password_link.php?token=" . urlencode($token);
 
   $fullName = trim(($user["firstname"] ?? "") . " " . ($user["lastname"] ?? ""));
   $recipientName = $fullName !== "" ? $fullName : ($user["username"] ?? "User");
